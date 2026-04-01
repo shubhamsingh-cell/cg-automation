@@ -16,7 +16,6 @@ export default function LocationDetail() {
 
   const locIntel = useMemo(() => {
     if (!data?.location_intelligence) return null;
-    // location_intelligence could be an object keyed by location or an array
     if (Array.isArray(data.location_intelligence)) {
       return data.location_intelligence.find((l) => l.location === location);
     }
@@ -104,16 +103,31 @@ export default function LocationDetail() {
       </button>
 
       <div className="flex items-center gap-3 mb-6">
-        <MapPin size={20} className="text-[#2E74B5]" />
+        <MapPin size={20} className="text-[#6BB3CD]" />
         <h2 className="text-xl font-bold text-white">{location}</h2>
         {actionRow?.tier && <TierBadge tier={actionRow.tier} />}
       </div>
 
       {/* Summary Card */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <SummaryItem label="Recommended Title" value={locIntel?.best_title || actionRow?.recommended_title || '--'} sub={locIntel?.title_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.title_avg_nr)}` : undefined} />
-        <SummaryItem label="Recommended Category" value={locIntel?.best_category || actionRow?.recommended_category || '--'} sub={locIntel?.cat_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.cat_avg_nr)}` : undefined} />
-        <SummaryItem label="Best Day" value={locIntel?.best_day || actionRow?.best_day || '--'} sub={locIntel?.day_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.day_avg_nr)}` : undefined} />
+        <SummaryItem
+          label="Recommended Title"
+          value={locIntel?.best_title || actionRow?.recommended_title || '--'}
+          sub={locIntel?.title_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.title_avg_nr)}` : undefined}
+          highlight
+        />
+        <SummaryItem
+          label="Recommended Category"
+          value={locIntel?.best_category || actionRow?.recommended_category || '--'}
+          sub={locIntel?.cat_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.cat_avg_nr)}` : undefined}
+          highlight
+        />
+        <SummaryItem
+          label="Best Day"
+          value={locIntel?.best_day || actionRow?.best_day || '--'}
+          sub={locIntel?.day_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.day_avg_nr)}` : undefined}
+          highlight
+        />
         <SummaryItem label="Multiplier" value={multiplierRow ? formatMultiplier(multiplierRow.multiplier) : '--'} sub={multiplierRow?.mult_source || '--'} />
       </div>
 
@@ -148,19 +162,19 @@ export default function LocationDetail() {
       {/* Combo Matrix */}
       {locIntel?.combo_matrix && locIntel.combo_matrix.length > 0 && (
         <Section title="Title x Category Combo Matrix">
-          <div className="overflow-auto rounded-xl border border-[#2a2a2a]">
+          <div className="overflow-auto rounded-xl border border-[rgba(90,84,189,0.1)]">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-[#0F2037]">
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-[#8bb8e0]">Title \ Category</th>
+                <tr className="bg-[#0F1629]">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-[#5A54BD]/70">Title \ Category</th>
                   {locIntel.combo_matrix[0]?.categories?.map((cat) => (
-                    <th key={cat} className="px-4 py-3 text-center text-xs font-semibold text-[#8bb8e0]">{cat}</th>
+                    <th key={cat} className="px-4 py-3 text-center text-xs font-semibold text-[#5A54BD]/70">{cat}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {locIntel.combo_matrix.map((row, i) => (
-                  <tr key={i} className={i % 2 === 0 ? 'bg-[#111]' : 'bg-[#141414]'}>
+                  <tr key={i} className={i % 2 === 0 ? 'bg-[#0a0b14]' : 'bg-[#0e1020]'}>
                     <td className="px-4 py-3 text-white">{row.title}</td>
                     {row.values?.map((val, j) => (
                       <td key={j} className={`px-4 py-3 text-center font-medium ${nrColorClass(val)}`}>
@@ -181,15 +195,15 @@ export default function LocationDetail() {
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={frequencyData[0].curve_data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                <XAxis dataKey="frequency" stroke="#666" tick={{ fill: '#999', fontSize: 12 }} />
-                <YAxis stroke="#666" tick={{ fill: '#999', fontSize: 12 }} tickFormatter={(v) => `$${v}`} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(90,84,189,0.1)" />
+                <XAxis dataKey="frequency" stroke="#444" tick={{ fill: '#888', fontSize: 12 }} />
+                <YAxis stroke="#444" tick={{ fill: '#888', fontSize: 12 }} tickFormatter={(v) => `$${v}`} />
                 <Tooltip
-                  contentStyle={{ background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 8 }}
-                  labelStyle={{ color: '#999' }}
+                  contentStyle={{ background: '#161B2E', border: '1px solid rgba(90,84,189,0.2)', borderRadius: 8 }}
+                  labelStyle={{ color: '#888' }}
                   formatter={(v) => [`$${v.toFixed(2)}`, 'Weekly NR']}
                 />
-                <Line type="monotone" dataKey="nr" stroke="#2E74B5" strokeWidth={2} dot={{ fill: '#2E74B5', r: 4 }} />
+                <Line type="monotone" dataKey="nr" stroke="#5A54BD" strokeWidth={2} dot={{ fill: '#6BB3CD', r: 4 }} activeDot={{ fill: '#5A54BD', r: 6, stroke: '#6BB3CD', strokeWidth: 2 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -215,11 +229,11 @@ function Section({ title, children }) {
   );
 }
 
-function SummaryItem({ label, value, sub, valueClass = 'text-white' }) {
+function SummaryItem({ label, value, sub, valueClass = 'text-white', highlight = false }) {
   return (
-    <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4">
-      <div className="text-[10px] font-semibold text-[#555] uppercase tracking-wider mb-1.5">{label}</div>
-      <div className={`text-sm font-semibold ${valueClass}`}>{value}</div>
+    <div className={`glass rounded-xl p-4 ${highlight ? 'gradient-border' : ''}`}>
+      <div className="text-[10px] font-semibold text-[#5A54BD]/50 uppercase tracking-wider mb-1.5">{label}</div>
+      <div className={`text-sm font-semibold ${highlight ? 'text-[#6BB3CD]' : valueClass}`}>{value}</div>
       {sub && <div className="text-xs text-[#666] mt-0.5">{sub}</div>}
     </div>
   );

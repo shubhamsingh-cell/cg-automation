@@ -57,30 +57,30 @@ export default function DataTable({
     <div className="w-full">
       {searchable && (
         <div className="relative mb-4">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#555]" />
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5A54BD]/50" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={searchPlaceholder}
-            className="w-full pl-10 pr-4 py-2.5 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#2E74B5]/50 transition-colors"
+            className="w-full pl-10 pr-4 py-2.5 glass rounded-lg text-sm text-white placeholder-[#555] focus:outline-none focus:border-[#5A54BD]/30 transition-colors"
           />
         </div>
       )}
 
       <div
-        className={`overflow-auto rounded-xl border border-[#2a2a2a] ${maxHeight ? '' : ''}`}
+        className={`overflow-auto rounded-xl border border-[rgba(90,84,189,0.1)] ${maxHeight ? '' : ''}`}
         style={maxHeight ? { maxHeight } : undefined}
       >
         <table className="w-full text-sm">
           <thead className={stickyHeader ? 'sticky top-0 z-10' : ''}>
-            <tr className="bg-[#0F2037]">
+            <tr className="bg-[#0F1629]">
               {columns.map((col) => (
                 <th
                   key={col.key || col.label}
                   onClick={() => col.sortable !== false && col.key && handleSort(col.key)}
-                  className={`px-4 py-3 text-left text-xs font-semibold text-[#8bb8e0] uppercase tracking-wider whitespace-nowrap ${
-                    col.sortable !== false && col.key ? 'cursor-pointer select-none hover:text-white' : ''
+                  className={`px-4 py-3 text-left text-xs font-semibold text-[#5A54BD]/70 uppercase tracking-wider whitespace-nowrap border-b border-[rgba(90,84,189,0.1)] ${
+                    col.sortable !== false && col.key ? 'cursor-pointer select-none hover:text-[#8B86E0]' : ''
                   } ${col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''}`}
                   style={col.width ? { width: col.width, minWidth: col.width } : undefined}
                 >
@@ -95,7 +95,7 @@ export default function DataTable({
                             <ChevronDown size={12} />
                           )
                         ) : (
-                          <ChevronsUpDown size={10} className="text-[#555]" />
+                          <ChevronsUpDown size={10} className="text-[#333]" />
                         )}
                       </span>
                     )}
@@ -104,7 +104,7 @@ export default function DataTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-[#1f1f1f]">
+          <tbody className="divide-y divide-[rgba(90,84,189,0.06)]">
             {sorted.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="px-4 py-12 text-center text-[#555]">
@@ -116,9 +116,9 @@ export default function DataTable({
                 <tr
                   key={row._key || i}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
-                  className={`transition-colors ${
-                    i % 2 === 0 ? 'bg-[#111]' : 'bg-[#141414]'
-                  } ${onRowClick ? 'cursor-pointer hover:bg-[#1a1a1a]' : 'hover:bg-[#181818]'} ${
+                  className={`transition-colors duration-100 ${
+                    i % 2 === 0 ? 'bg-[#0a0b14]' : 'bg-[#0e1020]'
+                  } ${onRowClick ? 'cursor-pointer hover:bg-[#161B2E]' : 'hover:bg-[#12152a]'} ${
                     rowClassName ? rowClassName(row) : ''
                   }`}
                 >
@@ -140,7 +140,7 @@ export default function DataTable({
       </div>
 
       {sorted.length > 0 && (
-        <div className="mt-2 text-xs text-[#555] px-1">
+        <div className="mt-2 text-xs text-[#444] px-1">
           {sorted.length} {sorted.length === 1 ? 'row' : 'rows'}
           {search && filtered.length !== data.length && ` (filtered from ${data.length})`}
         </div>
