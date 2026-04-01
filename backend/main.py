@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import io
+import ipaddress
 import json
 import logging
 import math
 import os
+import socket
 import ssl
 import threading
 import time
@@ -16,8 +18,9 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 import numpy as np
 
@@ -50,6 +53,7 @@ logger = logging.getLogger("cg-automation")
 # Constants
 # ---------------------------------------------------------------------------
 MAX_STORED_JOBS: int = 50
+MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
 # Excel styling colours
 CLR_HEADER_BG = "0F2037"
@@ -71,13 +75,139 @@ TIER_BG_MAP: dict[int, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Private IP ranges for SSRF protection
+# ---------------------------------------------------------------------------
+_PRIVATE_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_webhook_url(url: str) -> str | None:
+    """Validate a webhook URL for SSRF safety.
+
+    Returns None if the URL is safe, or an error message string if it is not.
+
+    Args:
+        url: The webhook URL to validate.
+
+    Returns:
+        None if valid, or an error description string.
+    """
+    if not url.startswith("https://"):
+        return "Webhook URL must use https:// scheme"
+
+    parsed = urllib.parse.urlparse(url)
+    hostname: str = parsed.hostname or ""
+    if not hostname:
+        return "Webhook URL has no valid hostname"
+
+    try:
+        resolved_ips: list[tuple[Any, ...]] = socket.getaddrinfo(
+            hostname, parsed.port or 443, proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror:
+        return f"Could not resolve hostname: {hostname}"
+
+    for _family, _type, _proto, _canonname, sockaddr in resolved_ips:
+        ip = ipaddress.ip_address(sockaddr[0])
+        for network in _PRIVATE_NETWORKS:
+            if ip in network:
+                return f"Webhook URL must not resolve to a private IP address ({ip})"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Lifespan -- reload persisted schedules from Supabase on startup
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Reload active schedules from Supabase on startup.
+
+    If Supabase is unreachable the app still starts -- schedules can be
+    re-created manually.
+    """
+    restored_count: int = 0
+    try:
+        active_schedules: list[dict[str, Any]] = supabase_store.list_active_schedules()
+        for sched in active_schedules:
+            schedule_id: str = sched.get("schedule_id") or ""
+            job_id: str = sched.get("job_id") or ""
+            cron_expr: str = sched.get("cron_expression") or "0 6 * * 1"
+            webhook_url: str | None = sched.get("webhook_url") or None
+
+            if not schedule_id or not job_id:
+                logger.warning("Skipping schedule with missing id/job_id: %s", sched)
+                continue
+
+            # The original job data may not be in memory (server restarted),
+            # but we still set up the timer -- _fire_scheduled_job handles
+            # the case where job_store[job_id] is None gracefully.
+            try:
+                delay: float = _seconds_until_next(cron_expr)
+            except (ValueError, IndexError):
+                logger.warning(
+                    "Invalid cron expression for schedule %s: %s, skipping",
+                    schedule_id, cron_expr,
+                )
+                continue
+
+            timer = threading.Timer(delay, _fire_scheduled_job, args=[schedule_id])
+            timer.daemon = True
+            timer.start()
+
+            with _schedule_lock:
+                _schedule_store[schedule_id] = {
+                    "schedule_id": schedule_id,
+                    "job_id": job_id,
+                    "cron_expression": cron_expr,
+                    "webhook_url": webhook_url,
+                    "interval_seconds": 7 * 24 * 60 * 60,
+                    "next_run": (datetime.now() + timedelta(seconds=delay)).isoformat(),
+                    "last_run": sched.get("last_run"),
+                    "created_at": sched.get("created_at") or datetime.now().isoformat(),
+                    "timer": timer,
+                }
+            restored_count += 1
+
+        logger.info("Startup: restored %d active schedule(s) from Supabase", restored_count)
+    except Exception:
+        logger.error(
+            "Failed to reload schedules from Supabase on startup (app continues)",
+            exc_info=True,
+        )
+
+    yield  # app runs
+
+    # Shutdown: cancel all timers
+    with _schedule_lock:
+        for sid, entry in _schedule_store.items():
+            timer_obj = entry.get("timer")
+            if timer_obj is not None:
+                timer_obj.cancel()
+        logger.info("Shutdown: cancelled %d schedule timer(s)", len(_schedule_store))
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="CG Automation API", version="1.0.0")
+app = FastAPI(title="CG Automation API", version="1.0.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://cg-automation.onrender.com",
+        "http://localhost:5173",  # Vite dev
+        "http://localhost:3000",  # React dev
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1351,8 +1481,22 @@ async def api_analyse(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded")
 
+    # Enforce 50 MB upload limit before reading into pandas
     try:
-        contents = await file.read()
+        contents: bytes = await file.read()
+    except Exception as exc:
+        logger.error("Failed to read uploaded file bytes", exc_info=True)
+        raise HTTPException(
+            status_code=400, detail=f"Failed to read file: {exc}"
+        ) from exc
+
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File size ({len(contents):,} bytes) exceeds 50 MB limit",
+        )
+
+    try:
         fname = (file.filename or "").lower()
         if fname.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(contents))
@@ -1602,6 +1746,12 @@ async def api_schedule(req: ScheduleRequest) -> dict[str, Any]:
             status_code=400,
             detail=f"Job {req.job_id} has no stored source data for re-analysis",
         )
+
+    # Validate webhook URL (SSRF protection)
+    if req.webhook_url:
+        webhook_error: str | None = _validate_webhook_url(req.webhook_url)
+        if webhook_error is not None:
+            raise HTTPException(status_code=400, detail=webhook_error)
 
     # Validate cron expression
     try:
