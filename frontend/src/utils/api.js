@@ -7,9 +7,12 @@ const api = axios.create({
   timeout: 120000,
 });
 
-export async function uploadFile(file, onProgress) {
+export async function uploadFile(file, onProgress, sellCpa) {
   const formData = new FormData();
   formData.append('file', file);
+  if (sellCpa != null) {
+    formData.append('sell_cpa', String(sellCpa));
+  }
   const response = await api.post('/api/analyse', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: onProgress,
