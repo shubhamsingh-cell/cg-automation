@@ -7,11 +7,18 @@ const api = axios.create({
   timeout: 120000,
 });
 
-export async function uploadFile(file, onProgress, sellCpa) {
+export async function uploadFile(file, onProgress, sellCpa, campaignContext) {
   const formData = new FormData();
   formData.append('file', file);
   if (sellCpa != null) {
     formData.append('sell_cpa', String(sellCpa));
+  }
+  if (campaignContext) {
+    if (campaignContext.client_name) formData.append('client_name', campaignContext.client_name);
+    if (campaignContext.job_category) formData.append('job_category', campaignContext.job_category);
+    if (campaignContext.competitors) formData.append('competitors', campaignContext.competitors);
+    if (campaignContext.target_geography) formData.append('target_geography', campaignContext.target_geography);
+    if (campaignContext.monthly_budget) formData.append('monthly_budget', String(campaignContext.monthly_budget));
   }
   const response = await api.post('/api/analyse', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

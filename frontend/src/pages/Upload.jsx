@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import posthog from 'posthog-js';
-import { Upload as UploadIcon, FileSpreadsheet, CheckCircle2, Loader2, AlertCircle, X, DollarSign, ChevronDown, Equal } from 'lucide-react';
+import { Upload as UploadIcon, FileSpreadsheet, CheckCircle2, Loader2, AlertCircle, X, DollarSign, ChevronDown, Equal, Sparkles } from 'lucide-react';
 import { uploadFile } from '../utils/api';
 import { useAnalysis } from '../context/AnalysisContext';
 
@@ -41,6 +41,11 @@ export default function Upload() {
   const [costPerApply, setCostPerApply] = useState('1.00');
   const [marginPct, setMarginPct] = useState('20');
   const [columnsOpen, setColumnsOpen] = useState(false);
+  const [clientName, setClientName] = useState('');
+  const [jobCategory, setJobCategory] = useState('');
+  const [competitors, setCompetitors] = useState('');
+  const [targetGeography, setTargetGeography] = useState('us_national');
+  const [monthlyBudget, setMonthlyBudget] = useState('');
   const sellCpa = (parseFloat(costPerApply || '0') * (1 + parseFloat(marginPct || '0') / 100)).toFixed(2);
 
   const handleFile = useCallback((f) => {
@@ -86,7 +91,14 @@ export default function Upload() {
 
     try {
       const cpaValue = parseFloat(sellCpa) || 1.20;
-      const data = await uploadFile(file, undefined, cpaValue);
+      const campaignContext = {
+        client_name: clientName,
+        job_category: jobCategory,
+        competitors,
+        target_geography: targetGeography,
+        monthly_budget: monthlyBudget ? parseFloat(monthlyBudget) : 0,
+      };
+      const data = await uploadFile(file, undefined, cpaValue, campaignContext);
       clearInterval(stepInterval);
       setCurrentStep(STEPS.length - 1);
       loadAnalysis(data);
@@ -241,6 +253,96 @@ export default function Upload() {
                   <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Sell CPA</label>
                   <div className="py-2.5 px-4 rounded-xl text-sm font-semibold sell-cpa-result">
                     ${sellCpa}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Campaign Context -- enriches AI insights with external data */}
+            <div className="mt-4 glass rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles size={15} className="text-[#6BB3CD]" />
+                <span className="text-sm text-[#999] font-medium">Campaign Context</span>
+                <span className="text-[9px] text-[#555] ml-auto">Optional -- improves AI insights</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {/* Client Name */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Client Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Apex Group"
+                    value={clientName}
+                    onChange={(e) => setClientName(e.target.value)}
+                    className="w-full pl-3 pr-3 py-2.5 bg-[#0a0a0a]/60 border border-[rgba(90,84,189,0.15)] rounded-xl text-sm text-white focus:outline-none focus:border-[#6BB3CD]/50 focus:ring-1 focus:ring-[#6BB3CD]/20 transition-all placeholder:text-[#333]"
+                    aria-label="Client name"
+                  />
+                </div>
+                {/* Job Category */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Job Category</label>
+                  <select
+                    value={jobCategory}
+                    onChange={(e) => setJobCategory(e.target.value)}
+                    className="w-full pl-3 pr-3 py-2.5 bg-[#0a0a0a]/60 border border-[rgba(90,84,189,0.15)] rounded-xl text-sm text-white focus:outline-none focus:border-[#6BB3CD]/50 focus:ring-1 focus:ring-[#6BB3CD]/20 transition-all appearance-none"
+                    aria-label="Job category"
+                  >
+                    <option value="">Select category...</option>
+                    <option value="gig_work">Gig Work / Freelance</option>
+                    <option value="healthcare">Healthcare</option>
+                    <option value="technology">Technology</option>
+                    <option value="retail">Retail / Hospitality</option>
+                    <option value="logistics">Logistics / Warehouse</option>
+                    <option value="finance">Finance / Accounting</option>
+                    <option value="manufacturing">Manufacturing</option>
+                    <option value="education">Education</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                {/* Competitors */}
+                <div className="col-span-2">
+                  <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Competitors (comma-separated)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., TaskRabbit, Fiverr, Wonolo"
+                    value={competitors}
+                    onChange={(e) => setCompetitors(e.target.value)}
+                    className="w-full pl-3 pr-3 py-2.5 bg-[#0a0a0a]/60 border border-[rgba(90,84,189,0.15)] rounded-xl text-sm text-white focus:outline-none focus:border-[#6BB3CD]/50 focus:ring-1 focus:ring-[#6BB3CD]/20 transition-all placeholder:text-[#333]"
+                    aria-label="Competitors"
+                  />
+                </div>
+                {/* Target Geography */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Target Geography</label>
+                  <select
+                    value={targetGeography}
+                    onChange={(e) => setTargetGeography(e.target.value)}
+                    className="w-full pl-3 pr-3 py-2.5 bg-[#0a0a0a]/60 border border-[rgba(90,84,189,0.15)] rounded-xl text-sm text-white focus:outline-none focus:border-[#6BB3CD]/50 focus:ring-1 focus:ring-[#6BB3CD]/20 transition-all appearance-none"
+                    aria-label="Target geography"
+                  >
+                    <option value="us_national">US National</option>
+                    <option value="us_east">US East Coast</option>
+                    <option value="us_west">US West Coast</option>
+                    <option value="us_south">US South</option>
+                    <option value="us_midwest">US Midwest</option>
+                    <option value="specific">Specific States</option>
+                  </select>
+                </div>
+                {/* Monthly Budget */}
+                <div>
+                  <label className="text-[10px] uppercase tracking-widest text-[#555] mb-1.5 block font-medium">Monthly Budget</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#555] text-sm font-medium">$</span>
+                    <input
+                      type="number"
+                      step="100"
+                      min="0"
+                      placeholder="e.g., 5000"
+                      value={monthlyBudget}
+                      onChange={(e) => setMonthlyBudget(e.target.value)}
+                      className="w-full pl-7 pr-3 py-2.5 bg-[#0a0a0a]/60 border border-[rgba(90,84,189,0.15)] rounded-xl text-sm text-white focus:outline-none focus:border-[#6BB3CD]/50 focus:ring-1 focus:ring-[#6BB3CD]/20 transition-all placeholder:text-[#333]"
+                      aria-label="Monthly budget in dollars"
+                    />
                   </div>
                 </div>
               </div>
