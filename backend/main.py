@@ -587,6 +587,12 @@ class InsightRequest(BaseModel):
     mult_source: str
     mult_runs: int
     optimal_posts_per_week: int
+    # Optional campaign context for enriched insights
+    client_name: str = ""
+    job_category: str = ""
+    competitors: str = ""
+    target_geography: str = "us_national"
+    monthly_budget: float = 0
 
 
 class ScheduleRequest(BaseModel):
@@ -1278,13 +1284,23 @@ def _safe_call(fn: Any, *args: Any, **kwargs: Any) -> None:
 @app.post("/api/analyse")
 async def api_analyse(
     file: UploadFile = File(...),
-    sell_cpa: float = 1.20,
+    sell_cpa: float = Form(1.20),
+    client_name: str = Form(""),
+    job_category: str = Form(""),
+    competitors: str = Form(""),
+    target_geography: str = Form("us_national"),
+    monthly_budget: float = Form(0),
 ) -> dict[str, Any]:
     """Upload an Excel file and run the full CG Automation analysis.
 
     Args:
         file: Uploaded Excel file (multipart/form-data).
         sell_cpa: Revenue per apply in USD (varies by client/campaign, default $1.20).
+        client_name: Optional client name for context-enriched insights.
+        job_category: Optional job category for context-enriched insights.
+        competitors: Optional comma-separated competitor names.
+        target_geography: Optional target geography (default us_national).
+        monthly_budget: Optional monthly budget in USD.
 
     Returns:
         Full JSON analysis with scorecard, daily action plan, and all views.
@@ -1324,6 +1340,20 @@ async def api_analyse(
     # Store source data for scheduled re-analysis
     result["_source_df"] = df
     result["_sell_cpa"] = sell_cpa
+
+    # Store campaign context for enriched AI insights
+    campaign_context: dict[str, Any] = {
+        "client_name": client_name,
+        "job_category": job_category,
+        "competitors": competitors,
+        "target_geography": target_geography,
+        "monthly_budget": monthly_budget,
+    }
+    # Only include non-empty values
+    result["campaign_context"] = {
+        k: v for k, v in campaign_context.items() if v
+    }
+
     job_store[job_id] = result
 
     # Fire-and-forget Slack notification (non-blocking)
@@ -1392,8 +1422,26 @@ async def api_insights(req: InsightRequest) -> dict[str, str]:
         f"Est Lifetime NR: ${req.est_lifetime_nr:.2f}\n"
         f"Location Multiplier: {req.multiplier:.2f}x ({req.mult_source}, {req.mult_runs} runs)\n"
         f"Optimal Posts This Week: {req.optimal_posts_per_week}x\n"
-        f"In 2 sentences: why repost now and one specific action tip."
     )
+
+    # Enrich prompt with campaign context if provided
+    has_context = any([req.client_name, req.job_category, req.competitors, req.monthly_budget])
+    if has_context:
+        context_lines = "\nCampaign Context:\n"
+        if req.client_name:
+            context_lines += f"- Client: {req.client_name}\n"
+        if req.job_category:
+            context_lines += f"- Category: {req.job_category}\n"
+        if req.competitors:
+            context_lines += f"- Competitors: {req.competitors}\n"
+        if req.target_geography and req.target_geography != "us_national":
+            context_lines += f"- Geography: {req.target_geography}\n"
+        if req.monthly_budget:
+            context_lines += f"- Monthly Budget: ${req.monthly_budget:,.0f}\n"
+        context_lines += "\nUse this context to make your recommendation more specific and actionable.\n"
+        user_prompt += context_lines
+
+    user_prompt += "In 2 sentences: why repost now and one specific action tip."
 
     system_prompt = (
         "You are a Craigslist ad campaign analyst. You give specific, actionable "

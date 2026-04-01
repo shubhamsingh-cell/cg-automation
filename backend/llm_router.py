@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 CEREBRAS_API_KEY: str = os.environ.get("CEREBRAS_API_KEY", "")
+SAMBANOVA_API_KEY: str = os.environ.get("SAMBANOVA_API_KEY", "")
+MISTRAL_API_KEY: str = os.environ.get("MISTRAL_API_KEY", "")
+TOGETHER_API_KEY: str = os.environ.get("TOGETHER_API_KEY", "")
+OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 
 _TIMEOUT_SECONDS: int = 8
@@ -38,7 +42,7 @@ def _call_gemini(system_prompt: str, user_prompt: str) -> Optional[str]:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        f"models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     )
     combined_prompt = f"{system_prompt}\n\n{user_prompt}"
     payload = json.dumps({
@@ -132,6 +136,67 @@ def _call_cerebras(system_prompt: str, user_prompt: str) -> Optional[str]:
         return None
 
 
+def _call_openai_compat(
+    name: str, url: str, api_key: str, model: str,
+    system_prompt: str, user_prompt: str,
+) -> Optional[str]:
+    """Generic OpenAI-compatible API caller (works for SambaNova, Mistral, Together, OpenRouter)."""
+    if not api_key:
+        return None
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": _MAX_TOKENS,
+    }).encode()
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
+            body = json.loads(resp.read().decode())
+        return body["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        logger.warning("%s call failed: %s", name, exc)
+        return None
+
+
+def _call_sambanova(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """SambaNova (Llama 3.3 70B) -- free tier."""
+    return _call_openai_compat(
+        "SambaNova", "https://api.sambanova.ai/v1/chat/completions",
+        SAMBANOVA_API_KEY, "Meta-Llama-3.3-70B-Instruct", system_prompt, user_prompt,
+    )
+
+
+def _call_mistral(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Mistral (Mistral Small) -- free tier."""
+    return _call_openai_compat(
+        "Mistral", "https://api.mistral.ai/v1/chat/completions",
+        MISTRAL_API_KEY, "mistral-small-latest", system_prompt, user_prompt,
+    )
+
+
+def _call_together(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """Together AI (Llama 3.3 70B) -- free tier."""
+    return _call_openai_compat(
+        "Together", "https://api.together.xyz/v1/chat/completions",
+        TOGETHER_API_KEY, "meta-llama/Llama-3.3-70B-Instruct-Turbo", system_prompt, user_prompt,
+    )
+
+
+def _call_openrouter(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """OpenRouter (free model rotation)."""
+    return _call_openai_compat(
+        "OpenRouter", "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY, "meta-llama/llama-3.3-70b-instruct:free", system_prompt, user_prompt,
+    )
+
+
 def _call_claude_haiku(system_prompt: str, user_prompt: str) -> Optional[str]:
     """Call Claude Haiku via the Anthropic REST API (stdlib only)."""
     if not ANTHROPIC_API_KEY:
@@ -171,9 +236,13 @@ def _call_claude_haiku(system_prompt: str, user_prompt: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 _PROVIDERS: list[tuple[str, callable]] = [
-    ("gemini-flash", _call_gemini),
+    ("gemini-2.5-flash", _call_gemini),
     ("groq-llama-3.3-70b", _call_groq),
     ("cerebras-llama-3.3-70b", _call_cerebras),
+    ("sambanova-llama-3.3-70b", _call_sambanova),
+    ("mistral-small", _call_mistral),
+    ("together-llama-3.3-70b", _call_together),
+    ("openrouter-llama-3.3-70b", _call_openrouter),
     ("claude-haiku", _call_claude_haiku),
 ]
 
