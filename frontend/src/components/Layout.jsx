@@ -1,10 +1,10 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 
-export default function Layout() {
+export default function Layout({ user }) {
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar />
+      <Sidebar user={user} />
       <main className="flex-1 overflow-y-auto bg-[#0a0a0a] p-6 flex flex-col min-h-screen aurora-bg">
         <div className="flex-1 relative z-10 page-enter">
           <Outlet />

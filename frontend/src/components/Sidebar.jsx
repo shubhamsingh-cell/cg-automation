@@ -12,9 +12,12 @@ import {
   TrendingUp,
   MapPin,
   BarChart3,
+  Activity,
   Download,
+  LogOut,
 } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
+import { signOut } from '../utils/supabase';
 
 const navItems = [
   { section: 'Analysis', items: [
@@ -30,6 +33,7 @@ const navItems = [
     { path: '/best-day', label: 'Best Day Analysis', icon: Calendar },
     { path: '/frequency', label: 'Frequency Optimization', icon: TrendingUp },
     { path: '/multipliers', label: 'Location Multipliers', icon: MapPin },
+    { path: '/trends', label: 'Trend Analysis', icon: Activity },
   ]},
   { section: 'Reports', items: [
     { path: '/scorecard', label: 'Scorecard', icon: BarChart3 },
@@ -37,7 +41,7 @@ const navItems = [
   ]},
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ user }) {
   const navigate = useNavigate();
   const { clearData } = useAnalysis();
 
@@ -45,6 +49,17 @@ export default function Sidebar() {
     clearData();
     navigate('/upload');
   }
+
+  async function handleSignOut() {
+    await signOut();
+    window.location.reload();
+  }
+
+  const displayName = user?.user_metadata?.full_name || user?.email || '';
+  const avatarUrl = user?.user_metadata?.avatar_url || '';
+  const initials = displayName
+    ? displayName.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+    : '?';
 
   return (
     <aside className="w-64 min-w-64 h-screen glass-strong flex flex-col border-r border-[rgba(90,84,189,0.12)]">
@@ -99,6 +114,36 @@ export default function Sidebar() {
           <span>New Upload</span>
         </button>
       </div>
+
+      {/* User profile + sign out */}
+      {user && (
+        <div className="p-3 border-t border-[rgba(90,84,189,0.1)]">
+          <div className="flex items-center gap-3 px-2">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={displayName}
+                className="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-[#5A54BD]/30 flex items-center justify-center flex-shrink-0">
+                <span className="text-xs font-semibold text-[#8B86E0]">{initials}</span>
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-white truncate">{displayName}</p>
+            </div>
+            <button
+              onClick={handleSignOut}
+              title="Sign out"
+              className="text-[#666] hover:text-red-400 transition-colors flex-shrink-0"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

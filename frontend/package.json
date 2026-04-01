@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.101.1",
     "axios": "^1.7.9",
     "lucide-react": "^0.468.0",
     "posthog-js": "^1.364.4",

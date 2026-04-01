@@ -81,6 +81,36 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
+# Supabase JWT auth middleware (permissive -- logs user, does not block)
+# ---------------------------------------------------------------------------
+SUPABASE_JWT_SECRET: str = os.environ.get("SUPABASE_JWT_SECRET") or ""
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    """Extract and validate Supabase JWT if present. Permissive: never blocks."""
+    request.state.user_email = None
+    auth_header: str = request.headers.get("authorization") or ""
+    if auth_header.startswith("Bearer ") and SUPABASE_JWT_SECRET:
+        token = auth_header[7:]
+        try:
+            import jwt as pyjwt  # PyJWT
+
+            payload = pyjwt.decode(
+                token,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+            request.state.user_email = payload.get("email")
+            logger.info("Authenticated user: %s", request.state.user_email)
+        except Exception:
+            logger.debug("JWT validation failed (permissive mode, continuing)")
+    response = await call_next(request)
+    return response
+
+
+# ---------------------------------------------------------------------------
 # In-memory job store (LRU, max 50)
 # ---------------------------------------------------------------------------
 
