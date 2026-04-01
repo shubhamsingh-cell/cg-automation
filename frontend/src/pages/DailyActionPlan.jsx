@@ -33,11 +33,11 @@ export default function DailyActionPlan() {
 
   const summary = useMemo(() => {
     if (!rows.length) return { totalSpend: 0, totalLifetimeNR: 0, count: 0, avgProfit: 0 };
-    const totalSpend = rows.reduce((s, r) => s + (r.cost || 0), 0);
-    const totalLifetimeNR = rows.reduce((s, r) => s + (r.est_lifetime_nr || 0), 0);
-    const profitVals = rows.filter(r => r.profit_pct != null);
+    const totalSpend = rows.reduce((s, r) => s + (r.d1_cost || r.D1_Cost || 0), 0);
+    const totalLifetimeNR = rows.reduce((s, r) => s + (r.est_lifetime_nr || r.Est_Lifetime_NR || 0), 0);
+    const profitVals = rows.filter(r => (r.profit_pct ?? r.Profit_Pct) != null);
     const avgProfit = profitVals.length > 0
-      ? profitVals.reduce((s, r) => s + r.profit_pct, 0) / profitVals.length
+      ? profitVals.reduce((s, r) => s + (r.profit_pct || r.Profit_Pct || 0), 0) / profitVals.length
       : 0;
     return { count: rows.length, totalSpend, totalLifetimeNR, avgProfit };
   }, [rows]);

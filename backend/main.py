@@ -1402,23 +1402,12 @@ async def api_insights(req: InsightRequest) -> dict[str, str]:
     )
 
     try:
-        client = _get_anthropic_client()
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=150,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        insight_text = message.content[0].text if message.content else ""
+        from llm_router import generate_insight
+        insight_text = generate_insight(system_prompt, user_prompt)
     except HTTPException:
         raise
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error", exc_info=True)
-        raise HTTPException(
-            status_code=502, detail=f"AI service error: {exc}"
-        ) from exc
     except Exception as exc:
-        logger.error("Unexpected error calling Claude", exc_info=True)
+        logger.error("Unexpected error generating insight", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Insight generation failed: {exc}"
         ) from exc
