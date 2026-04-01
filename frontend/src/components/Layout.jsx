@@ -33,11 +33,11 @@ export default function Layout({ user }) {
           </div>
         </header>
         {/* Main content */}
-        <main className="flex-1 overflow-y-auto bg-[#0a0a0a] p-6 aurora-bg">
-          <div className="relative z-10 page-enter max-w-[1400px] mx-auto">
+        <main className="flex-1 overflow-y-auto bg-[#0a0a0a] aurora-bg flex flex-col">
+          <div className="relative z-10 page-enter max-w-[1400px] mx-auto p-6 flex-1 w-full">
             <Outlet />
           </div>
-          <footer className="relative z-10 mt-8 pt-4 pb-4 text-center text-xs text-[#333] border-t border-[#1a1a2a]">
+          <footer className="relative z-10 mt-auto pt-4 pb-4 text-center text-xs text-[#333] border-t border-[#1a1a2a]">
             Created by Ayushi Singh &middot; CG Automation &middot; <a href="https://media-plan-generator.onrender.com" className="text-[#5A54BD] hover:text-[#6BB3CD] transition-colors">Nova AI Suite</a>
           </footer>
         </main>

@@ -81,6 +81,23 @@ function nrCell(v) { return <span className={nrColorClass(v)}>{formatCurrency(v)
 function pctCell(v) { return <span className={nrColorClass(v)}>{formatPercent(v)}</span>; }
 const BEST_BADGE = (v) => v ? <span className="text-[#1E8449] font-bold text-xs">BEST</span> : null;
 
+function EmptyState({ title, description }) {
+  const navigate = useNavigate();
+  return (
+    <div className="glass rounded-xl p-10 text-center gradient-border">
+      <Brain size={40} className="text-[#5A54BD]/40 mx-auto mb-4" />
+      <h3 className="text-lg font-semibold text-white mb-2">{title || 'No Data Yet'}</h3>
+      <p className="text-[#666] text-sm mb-6 max-w-md mx-auto">
+        {description || 'Upload your campaign data to unlock intelligence insights. CG Automation will analyze title, category, timing, and frequency performance across all locations.'}
+      </p>
+      <button onClick={() => navigate('/upload')}
+        className="cta-gradient px-6 py-2.5 rounded-lg text-white text-sm font-medium">
+        Upload Campaign Data
+      </button>
+    </div>
+  );
+}
+
 export default function Intelligence() {
   const navigate = useNavigate();
   const { data } = useAnalysis();
@@ -94,23 +111,29 @@ export default function Intelligence() {
         <Brain size={22} className="text-[#5A54BD]" />
         <h2 className="text-xl font-bold text-white">Intelligence</h2>
       </div>
-      <div className="flex gap-1 mb-6 overflow-x-auto pb-1">
-        {TABS.map((tab) => {
-          const Icon = tab.icon; const active = activeTab === tab.key;
-          return (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${active ? 'bg-[#5A54BD]/20 text-[#8B86E0] border border-[#5A54BD]/30' : 'text-[#666] hover:text-[#999] hover:bg-white/[0.03] border border-transparent'}`}>
-              <Icon size={14} />{tab.label}
-            </button>
-          );
-        })}
-      </div>
-      {activeTab === 'titles' && <TitlesTab intel={intel} locations={locations} navigate={navigate} />}
-      {activeTab === 'categories' && <CategoriesTab intel={intel} locations={locations} navigate={navigate} />}
-      {activeTab === 'bestday' && <BestDayTab intel={intel} />}
-      {activeTab === 'locations' && <LocationsTab data={data} navigate={navigate} />}
-      {activeTab === 'frequency' && <FrequencyTab data={data} navigate={navigate} />}
-      {activeTab === 'trends' && <TrendsTab data={data} />}
+      {!data ? (
+        <EmptyState title="Intelligence Awaits Your Data" description="Upload your Craigslist campaign CSV or Excel file to see per-location title rankings, category performance, best posting days, frequency optimization, and trend analysis." />
+      ) : (
+        <>
+          <div className="flex gap-1 mb-6 overflow-x-auto pb-1">
+            {TABS.map((tab) => {
+              const Icon = tab.icon; const active = activeTab === tab.key;
+              return (
+                <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                  className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${active ? 'bg-[#5A54BD]/20 text-[#8B86E0] border border-[#5A54BD]/30' : 'text-[#666] hover:text-[#999] hover:bg-white/[0.03] border border-transparent'}`}>
+                  <Icon size={14} />{tab.label}
+                </button>
+              );
+            })}
+          </div>
+          {activeTab === 'titles' && <TitlesTab intel={intel} locations={locations} navigate={navigate} />}
+          {activeTab === 'categories' && <CategoriesTab intel={intel} locations={locations} navigate={navigate} />}
+          {activeTab === 'bestday' && <BestDayTab intel={intel} />}
+          {activeTab === 'locations' && <LocationsTab data={data} navigate={navigate} />}
+          {activeTab === 'frequency' && <FrequencyTab data={data} navigate={navigate} />}
+          {activeTab === 'trends' && <TrendsTab data={data} />}
+        </>
+      )}
     </div>
   );
 }

@@ -2,10 +2,19 @@ import { createContext, useContext, useState, useCallback } from 'react';
 
 const AnalysisContext = createContext(null);
 
-/** Convert PascalCase/Mixed keys to snake_case for consistent frontend access */
+/** Convert PascalCase/Mixed keys to snake_case for consistent frontend access.
+ *  Handles: camelCase, PascalCase, ALL_CAPS, mixed (e.g. "TotalNR" -> "total_nr").
+ *  Does NOT mangle already-snake_case keys or ALL-CAPS values used as labels. */
 function normalizeKey(key) {
+  // If already snake_case or lowercase, return as-is
+  if (/^[a-z0-9_]+$/.test(key)) return key;
+  // If ALL_CAPS with underscores (e.g. "KEEP_RUNNING"), just lowercase
+  if (/^[A-Z0-9_]+$/.test(key)) return key.toLowerCase();
   return key
-    .replace(/([A-Z])/g, '_$1')
+    // Insert _ before uppercase that follows lowercase/digit (camelCase boundary)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    // Insert _ before uppercase that is followed by lowercase (handles "HTMLParser" -> "html_parser")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
     .toLowerCase()
     .replace(/^_/, '')
     .replace(/__+/g, '_');
