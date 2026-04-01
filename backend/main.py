@@ -84,13 +84,23 @@ app.add_middleware(
 # Supabase JWT auth middleware (permissive -- logs user, does not block)
 # ---------------------------------------------------------------------------
 SUPABASE_JWT_SECRET: str = os.environ.get("SUPABASE_JWT_SECRET") or ""
+CG_ADMIN_KEY: str = os.environ.get("CG_ADMIN_KEY") or ""
 
 
 @app.middleware("http")
 async def auth_middleware(request, call_next):
-    """Extract and validate Supabase JWT if present. Permissive: never blocks."""
+    """Extract and validate Supabase JWT or admin key. Permissive: never blocks."""
     request.state.user_email = None
     auth_header: str = request.headers.get("authorization") or ""
+
+    # Admin key bypass (for testing without OAuth)
+    admin_key = request.headers.get("x-admin-key") or request.query_params.get("admin_key") or ""
+    if admin_key and CG_ADMIN_KEY and admin_key == CG_ADMIN_KEY:
+        request.state.user_email = "admin@joveo.com"
+        logger.info("Admin key auth: admin@joveo.com")
+        response = await call_next(request)
+        return response
+
     if auth_header.startswith("Bearer ") and SUPABASE_JWT_SECRET:
         token = auth_header[7:]
         try:
