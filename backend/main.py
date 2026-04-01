@@ -1294,11 +1294,15 @@ async def api_analyse(
 
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
+        fname = (file.filename or "").lower()
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents))
+        else:
+            df = pd.read_excel(io.BytesIO(contents))
     except Exception as exc:
-        logger.error("Failed to read uploaded Excel file", exc_info=True)
+        logger.error("Failed to read uploaded file", exc_info=True)
         raise HTTPException(
-            status_code=400, detail=f"Failed to read Excel file: {exc}"
+            status_code=400, detail=f"Failed to read file: {exc}"
         ) from exc
 
     try:
