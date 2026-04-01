@@ -225,6 +225,344 @@ def _notify_slack_analysis(result: dict[str, Any], job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Google Sheets export (service account via GOOGLE_SHEETS_CREDENTIALS_B64)
+# ---------------------------------------------------------------------------
+GOOGLE_SHEETS_CREDENTIALS_B64: str = (
+    os.environ.get("GOOGLE_SHEETS_CREDENTIALS_B64") or ""
+)
+_GSHEETS_SCOPES: list[str] = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+_GSHEETS_TOKEN_URI: str = "https://oauth2.googleapis.com/token"
+_GSHEETS_BASE: str = "https://sheets.googleapis.com/v4/spreadsheets"
+_GDRIVE_BASE: str = "https://www.googleapis.com/drive/v3/files"
+_gsheets_token_cache: dict[str, Any] = {"token": None, "expires_at": 0.0}
+
+
+def _load_gsheets_credentials() -> Optional[dict[str, str]]:
+    """Load Google service account credentials from base64 env var."""
+    if not GOOGLE_SHEETS_CREDENTIALS_B64:
+        return None
+    required_fields = ("client_email", "private_key", "token_uri")
+    try:
+        decoded = base64.b64decode(GOOGLE_SHEETS_CREDENTIALS_B64)
+        creds: dict[str, str] = json.loads(decoded)
+        for field in required_fields:
+            if field not in creds:
+                logger.error("Google SA JSON missing field: %s", field)
+                return None
+        return creds
+    except Exception as exc:
+        logger.error("Failed to decode GOOGLE_SHEETS_CREDENTIALS_B64: %s", exc, exc_info=True)
+        return None
+
+
+def _build_gsheets_jwt(creds: dict[str, str]) -> str:
+    """Build a signed RS256 JWT for Google OAuth2 token exchange."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding as rsa_padding
+
+    now = int(time.time())
+    header = {"alg": "RS256", "typ": "JWT"}
+    clms = {
+        "iss": creds["client_email"],
+        "scope": " ".join(_GSHEETS_SCOPES),
+        "aud": creds.get("token_uri") or _GSHEETS_TOKEN_URI,
+        "iat": now, "exp": now + 3600,
+    }
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    hdr_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
+    clm_b64 = _b64url(json.dumps(clms, separators=(",", ":")).encode())
+    si = f"{hdr_b64}.{clm_b64}".encode("ascii")
+    try:
+        key = serialization.load_pem_private_key(creds["private_key"].encode("utf-8"), password=None)
+        sig = key.sign(si, rsa_padding.PKCS1v15(), hashes.SHA256())  # type: ignore[union-attr]
+        return f"{hdr_b64}.{clm_b64}.{_b64url(sig)}"
+    except Exception as exc:
+        raise RuntimeError(f"JWT RS256 signing failed: {exc}") from exc
+
+
+def _get_gsheets_access_token() -> Optional[str]:
+    """Obtain a Google OAuth2 access token. Caches until 5 min before expiry."""
+    now = time.time()
+    if _gsheets_token_cache["token"] and _gsheets_token_cache["expires_at"] > now + 300:
+        return _gsheets_token_cache["token"]
+    creds = _load_gsheets_credentials()
+    if not creds:
+        return None
+    try:
+        jwt_token = _build_gsheets_jwt(creds)
+    except RuntimeError as exc:
+        logger.error("Google Sheets JWT failed: %s", exc, exc_info=True)
+        return None
+    tok_payload = urllib.parse.urlencode({
+        "grant_type": "urn:ietf:params:oauth:2.0-jwt-bearer", "assertion": jwt_token,
+    }).encode("utf-8")
+    token_uri = creds.get("token_uri") or _GSHEETS_TOKEN_URI
+    req = urllib.request.Request(token_uri, data=tok_payload,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            td = json.loads(resp.read().decode("utf-8"))
+        _gsheets_token_cache["token"] = td["access_token"]
+        _gsheets_token_cache["expires_at"] = now + td.get("expires_in", 3600)
+        return _gsheets_token_cache["token"]
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError) as exc:
+        logger.error("Google OAuth2 token exchange failed: %s", exc, exc_info=True)
+        return None
+
+
+def _gsheets_request(
+    method: str, url: str, body: Optional[dict] = None, token: Optional[str] = None,
+) -> Optional[dict]:
+    """Make an authenticated request to the Google Sheets/Drive API."""
+    if token is None:
+        token = _get_gsheets_access_token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    data = json.dumps(body).encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8")
+        except Exception:
+            pass
+        logger.error("Google API %s %s -> %d: %s", method, url, exc.code, err_body, exc_info=True)
+        return None
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        logger.error("Google API request failed: %s", exc, exc_info=True)
+        return None
+
+
+def _safe_cell(value: Any) -> str:
+    """Convert a value to a safe string for Google Sheets cells."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        if math.isnan(value) or math.isinf(value):
+            return ""
+        return str(value)
+    s = str(value)
+    if s and s[0] in ("=", "+", "@", "-"):
+        return f"'{s}"
+    return s
+
+
+def _job_result_to_sheet_data(result: dict[str, Any]) -> dict[str, list[list[str]]]:
+    """Convert analysis result dict into sheet-name -> rows mapping (9 sheets)."""
+    sheets: dict[str, list[list[str]]] = {}
+    # Sheet 1: Daily Action Plan
+    dap_h = ["#", "Location", "Best Title", "Best Category", "Best Day",
+             "Today Good?", "Tier", "Trigger", "Est D1 NR", "Est Lifetime NR",
+             "Posts/Week", "Multiplier", "Mult Source", "Competing Filtered", "Last Run Date"]
+    dap_rows: list[list[str]] = [dap_h]
+    cc: dict[str, int] = {}
+    for c in result.get("location_conflicts", []):
+        lk = str(c.get("Location", c.get("location", ""))).strip().lower()
+        cc[lk] = cc.get(lk, 0) + 1
+    for i, r in enumerate(result.get("daily_action_plan", []), 1):
+        loc = r.get("location", r.get("Location", ""))
+        lk = str(loc).strip().lower()
+        dap_rows.append([str(i), _safe_cell(loc),
+            _safe_cell(r.get("recommended_title", r.get("Best_Title", ""))),
+            _safe_cell(r.get("recommended_category", r.get("Best_Category", ""))),
+            _safe_cell(r.get("best_day", r.get("Best_Day", ""))),
+            _safe_cell(r.get("today_good", r.get("Today_Good", ""))),
+            _safe_cell(r.get("tier", r.get("Tier", ""))),
+            _safe_cell(r.get("trigger_reason", r.get("Trigger_Reason", ""))),
+            _safe_cell(r.get("d1_nr", r.get("D1_NR", r.get("Est_D1_NR", 0)))),
+            _safe_cell(r.get("est_lifetime_nr", r.get("Est_Lifetime_NR", 0))),
+            _safe_cell(r.get("optimal_posts_per_week", r.get("Optimal_Posts_Per_Week", 1))),
+            _safe_cell(r.get("multiplier", r.get("Multiplier_Used", ""))),
+            _safe_cell(r.get("mult_source", r.get("Mult_Source", ""))),
+            str(cc.get(lk, 0)),
+            _safe_cell(r.get("last_run_date", r.get("D1_Date", "")))])
+    sheets["Daily Action Plan"] = dap_rows
+    # Sheet 2: All Repost Candidates
+    rp_h = ["#", "Location", "Title", "Category", "Tier", "Cost", "Profit %",
+            "Trigger", "D1 Applies", "D1 NR", "Lifetime NR", "Multiplier",
+            "Mult Source", "Best Day", "Today Good?", "Posts/Week"]
+    rp_rows: list[list[str]] = [rp_h]
+    for i, r in enumerate(result.get("all_repost", []), 1):
+        p = r.get("Profit_Pct")
+        ps = f"{p:.1f}%" if isinstance(p, (int, float)) else _safe_cell(p)
+        rp_rows.append([str(i), _safe_cell(r.get("Location", "")),
+            _safe_cell(r.get("Title", "")), _safe_cell(r.get("Category", "")),
+            _safe_cell(r.get("Tier", "")), _safe_cell(r.get("D1_Cost", 0)), ps,
+            _safe_cell(r.get("Trigger_Reason", "")), _safe_cell(r.get("D1_Applies", 0)),
+            _safe_cell(r.get("D1_NR", 0)), _safe_cell(r.get("Est_Lifetime_NR", 0)),
+            _safe_cell(r.get("Multiplier_Used", "")), _safe_cell(r.get("Mult_Source", "")),
+            _safe_cell(r.get("Best_Day", "")), _safe_cell(r.get("Today_Good", "")),
+            _safe_cell(r.get("Optimal_Posts_Per_Week", 1))])
+    sheets["All Repost"] = rp_rows
+    # Sheet 3: Best Per Location
+    bpl_h = ["#", "Location", "Best Title", "Best Category", "Tier",
+             "Est Lifetime NR", "Best Day", "Posts/Week"]
+    bpl_rows: list[list[str]] = [bpl_h]
+    for i, r in enumerate(result.get("best_per_location", []), 1):
+        bpl_rows.append([str(i), _safe_cell(r.get("Location", "")),
+            _safe_cell(r.get("Title", "")), _safe_cell(r.get("Category", "")),
+            _safe_cell(r.get("Tier", "")), _safe_cell(r.get("Est_Lifetime_NR", 0)),
+            _safe_cell(r.get("DayOfWeek_Posted", "")), _safe_cell(r.get("Run_Length", ""))])
+    sheets["Best Per Location"] = bpl_rows
+    # Sheet 4: Location Conflicts
+    lc_h = ["Location", "Title", "Category", "Tier", "Est Lifetime NR", "Lost To", "NR Gap"]
+    lc_rows: list[list[str]] = [lc_h]
+    for r in result.get("location_conflicts", []):
+        lc_rows.append([_safe_cell(r.get("Location", "")), _safe_cell(r.get("Title", "")),
+            _safe_cell(r.get("Category", "")), _safe_cell(r.get("Tier", "")),
+            _safe_cell(r.get("Est_Lifetime_NR", 0)), _safe_cell(r.get("lost_to", "")),
+            _safe_cell(r.get("nr_gap", 0))])
+    sheets["Location Conflicts"] = lc_rows
+    # Sheet 5: Keep Running
+    kr_h = ["Location", "Title", "Category", "Total NR", "Profit %", "Trigger"]
+    kr_rows: list[list[str]] = [kr_h]
+    for r in result.get("keep_running", []):
+        p = r.get("Profit_Pct")
+        ps = f"{p:.1f}%" if isinstance(p, (int, float)) else _safe_cell(p)
+        kr_rows.append([_safe_cell(r.get("Location", "")), _safe_cell(r.get("Title", "")),
+            _safe_cell(r.get("Category", "")), _safe_cell(r.get("Total_NR", 0)), ps,
+            _safe_cell(r.get("Trigger_Reason", ""))])
+    sheets["Keep Running"] = kr_rows
+    # Sheet 6: Skip
+    sk_h = ["Location", "Title", "Category", "Total NR", "Profit %", "Skip Reason"]
+    sk_rows: list[list[str]] = [sk_h]
+    for r in result.get("skip", []):
+        p = r.get("Profit_Pct")
+        ps = f"{p:.1f}%" if isinstance(p, (int, float)) else _safe_cell(p)
+        sk_rows.append([_safe_cell(r.get("Location", "")), _safe_cell(r.get("Title", "")),
+            _safe_cell(r.get("Category", "")), _safe_cell(r.get("Total_NR", 0)), ps,
+            _safe_cell(r.get("Trigger_Reason", ""))])
+    sheets["Skip"] = sk_rows
+    # Sheet 7: Location Intelligence
+    loc_intel = result.get("location_intelligence", {})
+    li_h = ["Location", "Best Title", "Title Avg NR", "Best Category", "Cat Avg NR",
+            "Best Day", "Day Avg NR", "Best Combo", "Combo Avg NR", "Multiplier", "Mult Source"]
+    li_rows: list[list[str]] = [li_h]
+    for _, info in sorted(loc_intel.items()):
+        li_rows.append([_safe_cell(info.get("Location", "")),
+            _safe_cell(info.get("best_title", "")),
+            _safe_cell(info.get("best_title_avg_nr", info.get("title_avg_nr", 0))),
+            _safe_cell(info.get("best_category", "")),
+            _safe_cell(info.get("best_category_avg_nr", info.get("cat_avg_nr", 0))),
+            _safe_cell(info.get("best_day", "")),
+            _safe_cell(info.get("best_day_avg_nr", info.get("day_avg_nr", 0))),
+            _safe_cell(info.get("best_combo", "")),
+            _safe_cell(info.get("best_combo_avg_nr", info.get("combo_avg_nr", 0))),
+            _safe_cell(info.get("multiplier", "")), _safe_cell(info.get("mult_source", ""))])
+    sheets["Location Intelligence"] = li_rows
+    # Sheet 8: Frequency Optimisation
+    fo_h = ["Combo", "Optimal/Week", "Expected Weekly NR", "NR at 1x",
+            "Extra NR", "Max Observed", "NR Curve"]
+    fo_rows: list[list[str]] = [fo_h]
+    for r in result.get("frequency_optimization", []):
+        fo_rows.append([_safe_cell(r.get("combo", "")),
+            _safe_cell(r.get("optimal_posts_per_week", "")),
+            _safe_cell(r.get("expected_weekly_nr", 0)), _safe_cell(r.get("nr_at_1x", 0)),
+            _safe_cell(r.get("extra_nr_vs_1x", 0)),
+            _safe_cell(r.get("max_observed_posts_wk", "")), _safe_cell(r.get("nr_curve", ""))])
+    sheets["Frequency Optimisation"] = fo_rows
+    # Sheet 9: All Runs
+    ar_h = ["Post ID", "Location", "Title", "Category", "D1 Date", "Last Date",
+            "Day Posted", "Run Length", "D1 Cost", "D1 Applies", "D1 NR",
+            "Total Applies", "Total NR", "Profit %", "Impr Drop %",
+            "Est Lifetime NR", "Multiplier", "Mult Source", "Decision", "Trigger"]
+    ar_k = ["Post ID", "Location", "Title", "Category", "D1_Date", "Last_Date",
+            "DayOfWeek_Posted", "Run_Length", "D1_Cost", "D1_Applies", "D1_NR",
+            "Total_Applies", "Total_NR", "Profit_Pct", "Impr_Drop_Pct",
+            "Est_Lifetime_NR", "Multiplier_Used", "Mult_Source", "Decision", "Trigger_Reason"]
+    ar_rows: list[list[str]] = [ar_h]
+    for r in result.get("all_runs", []):
+        row: list[str] = []
+        for k in ar_k:
+            v = r.get(k)
+            if k in ("Profit_Pct", "Impr_Drop_Pct") and isinstance(v, (int, float)):
+                row.append(f"{v:.1f}%")
+            else:
+                row.append(_safe_cell(v))
+        ar_rows.append(row)
+    sheets["All Runs"] = ar_rows
+    return sheets
+
+
+def _create_google_sheet(job_data: dict[str, Any]) -> str:
+    """Create a Google Spreadsheet with 9 sheets matching the Excel download.
+
+    Args:
+        job_data: The full analysis result dict from job_store.
+
+    Returns:
+        URL of the created spreadsheet.
+
+    Raises:
+        RuntimeError: If credentials are missing or API calls fail.
+    """
+    token = _get_gsheets_access_token()
+    if not token:
+        raise RuntimeError("Google Sheets not configured or token exchange failed")
+    sheet_data = _job_result_to_sheet_data(job_data)
+    jid = job_data.get("job_id", "unknown")
+    specs: list[dict[str, Any]] = [
+        {"properties": {"sheetId": idx, "title": name, "index": idx}}
+        for idx, name in enumerate(sheet_data.keys())
+    ]
+    title = f"CG Automation Report ({jid[:8]}) - {datetime.utcnow().strftime('%Y-%m-%d')}"
+    api_res = _gsheets_request(
+        "POST", _GSHEETS_BASE,
+        body={"properties": {"title": title}, "sheets": specs}, token=token)
+    if not api_res:
+        raise RuntimeError("Failed to create Google Spreadsheet")
+    sid: str = api_res.get("spreadsheetId") or ""
+    if not sid:
+        raise RuntimeError("Google Sheets API returned no spreadsheetId")
+    vr: list[dict[str, Any]] = [
+        {"range": f"'{sn}'!A1", "majorDimension": "ROWS", "values": rows}
+        for sn, rows in sheet_data.items() if rows
+    ]
+    if vr:
+        br = _gsheets_request(
+            "POST", f"{_GSHEETS_BASE}/{sid}/values:batchUpdate",
+            body={"valueInputOption": "USER_ENTERED", "data": vr}, token=token)
+        if not br:
+            logger.warning("Spreadsheet created but data population failed")
+    fmt: list[dict[str, Any]] = []
+    for idx, (_sn, rows) in enumerate(sheet_data.items()):
+        if not rows:
+            continue
+        fmt.append({"updateSheetProperties": {
+            "properties": {"sheetId": idx, "gridProperties": {"frozenRowCount": 1}},
+            "fields": "gridProperties.frozenRowCount"}})
+        fmt.append({"repeatCell": {
+            "range": {"sheetId": idx, "startRowIndex": 0, "endRowIndex": 1},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"bold": True,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                "backgroundColor": {"red": 0.059, "green": 0.125, "blue": 0.216},
+                "horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)"}})
+        fmt.append({"autoResizeDimensions": {"dimensions": {
+            "sheetId": idx, "dimension": "COLUMNS",
+            "startIndex": 0, "endIndex": len(rows[0]) if rows else 10}}})
+    if fmt:
+        _gsheets_request("POST", f"{_GSHEETS_BASE}/{sid}:batchUpdate",
+                         body={"requests": fmt}, token=token)
+    _gsheets_request("POST", f"{_GDRIVE_BASE}/{sid}/permissions",
+                     body={"role": "reader", "type": "anyone"}, token=token)
+    return f"https://docs.google.com/spreadsheets/d/{sid}"
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -923,6 +1261,20 @@ def _persist_to_supabase(
     thread.start()
 
 
+def _safe_call(fn: Any, *args: Any, **kwargs: Any) -> None:
+    """Call *fn* swallowing all exceptions (for background threads).
+
+    Args:
+        fn: Callable to invoke.
+        *args: Positional arguments.
+        **kwargs: Keyword arguments.
+    """
+    try:
+        fn(*args, **kwargs)
+    except Exception:
+        logger.error("Background Supabase call %s failed", fn.__name__, exc_info=True)
+
+
 @app.post("/api/analyse")
 async def api_analyse(
     file: UploadFile = File(...),
@@ -1239,7 +1591,169 @@ async def api_cancel_schedule(schedule_id: str) -> dict[str, str]:
         timer.cancel()
 
     logger.info("Cancelled schedule %s (job_id=%s)", schedule_id, entry["job_id"])
+
+    # Remove from Supabase (background, non-blocking)
+    threading.Thread(
+        target=lambda: _safe_call(supabase_store.delete_schedule, schedule_id),
+        daemon=True,
+    ).start()
+
     return {"schedule_id": schedule_id, "status": "cancelled"}
+
+
+# ---------------------------------------------------------------------------
+# Supabase read endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/jobs")
+async def api_list_jobs(limit: int = 20) -> list[dict[str, Any]]:
+    """List recent analysis jobs from Supabase.
+
+    Falls back to in-memory job_store keys if Supabase is not configured.
+
+    Args:
+        limit: Maximum number of jobs to return.
+
+    Returns:
+        List of job summary dicts.
+    """
+    sb_jobs = supabase_store.list_jobs(limit=limit)
+    if sb_jobs:
+        return sb_jobs
+
+    # Fallback: return summaries from in-memory store
+    results: list[dict[str, Any]] = []
+    for jid, data in list(job_store.items())[:limit]:
+        sc = data.get("scorecard", {})
+        results.append({
+            "job_id": jid,
+            "filename": data.get("filename", ""),
+            "status": "completed",
+            "total_locations": sc.get("total_locations", 0),
+            "total_spend": sc.get("total_spend") or sc.get("total_cost", 0),
+            "total_nr": sc.get("total_nr") or sc.get("total_lifetime_nr", 0),
+        })
+    return results
+
+
+@app.get("/api/job/{job_id}")
+async def api_get_job(job_id: str) -> dict[str, Any]:
+    """Get a single job by job_id.
+
+    Tries Supabase first, then falls back to in-memory store.
+
+    Args:
+        job_id: UUID of the job.
+
+    Returns:
+        Job dict with scorecard and action plan data.
+    """
+    sb_job = supabase_store.get_job(job_id)
+    if sb_job:
+        return sb_job
+
+    # Fallback: in-memory store
+    stored = job_store.get(job_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    response = {k: v for k, v in stored.items() if not k.startswith("_")}
+    return response
+
+
+# ===================================================================
+# GOOGLE SHEETS EXPORT ENDPOINTS
+# ===================================================================
+
+
+@app.post("/api/sheets/{job_id}")
+async def api_create_sheets(job_id: str) -> dict[str, Any]:
+    """Export analysis results to a new Google Spreadsheet.
+
+    Creates a Google Sheet with the same 9 tabs as the Excel download.
+    Runs the Sheets API calls in a background thread and stores the
+    resulting URL in job_store for polling via GET /api/sheets-url/{job_id}.
+
+    If GOOGLE_SHEETS_CREDENTIALS_B64 is not set, returns 501.
+
+    Args:
+        job_id: UUID of the analysis job.
+
+    Returns:
+        Dict with sheets_url if already created, or status=pending.
+    """
+    if not GOOGLE_SHEETS_CREDENTIALS_B64:
+        raise HTTPException(
+            status_code=501,
+            detail="Google Sheets not configured (GOOGLE_SHEETS_CREDENTIALS_B64 not set)",
+        )
+
+    job_data = job_store.get(job_id)
+    if job_data is None:
+        raise HTTPException(
+            status_code=404, detail=f"Job {job_id} not found or expired"
+        )
+
+    # If already exported, return the existing URL
+    existing_url = job_data.get("sheets_url")
+    if existing_url:
+        return {"sheets_url": existing_url, "status": "ready"}
+
+    # Run in background thread to avoid blocking the event loop
+    def _bg_create() -> None:
+        try:
+            url = _create_google_sheet(job_data)
+            job_data["sheets_url"] = url
+            logger.info("Google Sheet created for job %s: %s", job_id, url)
+        except Exception as exc:
+            job_data["sheets_error"] = str(exc)
+            logger.error(
+                "Google Sheet creation failed for job %s: %s",
+                job_id, exc, exc_info=True,
+            )
+
+    bg_thread = threading.Thread(target=_bg_create, daemon=True)
+    bg_thread.start()
+
+    return {
+        "status": "pending",
+        "message": "Google Sheet creation started. Poll GET /api/sheets-url/{job_id}.",
+    }
+
+
+@app.get("/api/sheets-url/{job_id}")
+async def api_get_sheets_url(job_id: str) -> dict[str, Any]:
+    """Poll for the Google Sheets URL after POST /api/sheets/{job_id}.
+
+    Args:
+        job_id: UUID of the analysis job.
+
+    Returns:
+        Dict with sheets_url if ready, status=pending if still creating,
+        or error details if creation failed.
+    """
+    if not GOOGLE_SHEETS_CREDENTIALS_B64:
+        raise HTTPException(
+            status_code=501,
+            detail="Google Sheets not configured (GOOGLE_SHEETS_CREDENTIALS_B64 not set)",
+        )
+
+    job_data = job_store.get(job_id)
+    if job_data is None:
+        raise HTTPException(
+            status_code=404, detail=f"Job {job_id} not found or expired"
+        )
+
+    sheets_url = job_data.get("sheets_url")
+    if sheets_url:
+        return {"sheets_url": sheets_url, "status": "ready"}
+
+    sheets_error = job_data.get("sheets_error")
+    if sheets_error:
+        return {"status": "error", "detail": sheets_error}
+
+    return {"status": "pending", "message": "Google Sheet is still being created."}
 
 
 # ---------------------------------------------------------------------------
