@@ -23,9 +23,12 @@ import numpy as np
 
 import anthropic
 import pandas as pd
+from pathlib import Path
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -1840,6 +1843,23 @@ async def api_get_sheets_url(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Serve React frontend (built files in static/)
+# ---------------------------------------------------------------------------
+_STATIC_DIR = Path(__file__).parent / "static"
+
+if _STATIC_DIR.is_dir() and (_STATIC_DIR / "index.html").exists():
+    # Serve static assets (JS, CSS, images)
+    app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR / "assets")), name="assets")
+
+    # Catch-all: serve index.html for any non-API route (React SPA routing)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str) -> HTMLResponse:
+        """Serve React SPA for all non-API routes."""
+        index_html = (_STATIC_DIR / "index.html").read_text()
+        return HTMLResponse(content=index_html)
+
+
 if __name__ == "__main__":
     import uvicorn
 
