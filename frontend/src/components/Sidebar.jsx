@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, ClipboardList, Brain, BarChart3, Upload, LogOut } from 'lucide-react';
+import { LayoutDashboard, ClipboardList, Brain, BarChart3, Upload, LogOut, ArrowLeft } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import { signOut } from '../utils/supabase';
 
@@ -73,6 +73,17 @@ export default function Sidebar({ user }) {
           <Upload size={18} />
           <span>New Upload</span>
         </button>
+      </div>
+
+      {/* Back to Nova */}
+      <div className="px-3 pb-2">
+        <a
+          href="https://media-plan-generator.onrender.com"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-[#5A54BD] hover:text-[#6BB3CD] hover:bg-[#5A54BD]/5 transition-all duration-150 w-full"
+        >
+          <ArrowLeft size={16} />
+          <span>Back to Nova</span>
+        </a>
       </div>
 
       {/* Sign out */}

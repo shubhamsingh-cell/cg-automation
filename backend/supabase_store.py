@@ -396,6 +396,126 @@ def delete_schedule(schedule_id: str) -> bool:
     return result is not None or result == []
 
 
+# ---------------------------------------------------------------------------
+# Nova data enrichment (cross-project queries)
+# ---------------------------------------------------------------------------
+
+def get_nova_enrichment(
+    location: str,
+    category: str,
+) -> dict[str, Any]:
+    """Query Nova's knowledge_base and channel_benchmarks for enrichment data.
+
+    Fetches salary/demand data for the given location from Nova's knowledge_base
+    table and CPA benchmarks for the category from Nova's channel_benchmarks table.
+    Both tables live in the same Supabase project as the CG tables.
+
+    Args:
+        location: Location string (e.g. "Houston, TX").
+        category: Job category string (e.g. "General Labor").
+
+    Returns:
+        Dict with keys: salary_range, demand_level, cpa_benchmark.
+        Values default to None when data is unavailable.
+    """
+    enrichment: dict[str, Any] = {
+        "salary_range": None,
+        "demand_level": None,
+        "cpa_benchmark": None,
+    }
+
+    if not _configured():
+        return enrichment
+
+    # --- knowledge_base: salary & demand for location ---
+    try:
+        # Use ilike for partial matching (e.g. "Houston" matches "Houston, TX")
+        # Search for rows whose content mentions the location
+        kb_result = _supabase_request(
+            "GET",
+            "knowledge_base",
+            params={
+                "select": "content,metadata",
+                "or": (
+                    f"(content.ilike.%{location}%,"
+                    f"metadata->>location.ilike.%{location}%)"
+                ),
+                "limit": "5",
+            },
+        )
+        if kb_result and isinstance(kb_result, list):
+            for row in kb_result:
+                content: str = row.get("content") or ""
+                metadata: dict[str, Any] = row.get("metadata") or {}
+                content_lower = content.lower()
+
+                # Extract salary range from metadata or content
+                if not enrichment["salary_range"]:
+                    salary = metadata.get("salary_range") or metadata.get("salary")
+                    if salary:
+                        enrichment["salary_range"] = str(salary)
+                    elif "salary" in content_lower or "$" in content:
+                        # Store the content snippet as a salary hint
+                        enrichment["salary_range"] = content[:200]
+
+                # Extract demand level from metadata or content
+                if not enrichment["demand_level"]:
+                    demand = metadata.get("demand_level") or metadata.get("demand")
+                    if demand:
+                        enrichment["demand_level"] = str(demand)
+                    elif "demand" in content_lower or "hiring" in content_lower:
+                        enrichment["demand_level"] = content[:200]
+
+    except urllib.error.HTTPError as exc:
+        logger.warning(
+            "Nova knowledge_base query failed (HTTP %d) for location=%s",
+            exc.code, location,
+        )
+    except Exception:
+        logger.warning(
+            "Nova knowledge_base query failed for location=%s",
+            location, exc_info=True,
+        )
+
+    # --- channel_benchmarks: CPA benchmark for category ---
+    try:
+        cb_result = _supabase_request(
+            "GET",
+            "channel_benchmarks",
+            params={
+                "select": "category,channel,cpa,cpc,conversion_rate",
+                "category": f"ilike.%{category}%",
+                "limit": "5",
+            },
+        )
+        if cb_result and isinstance(cb_result, list) and len(cb_result) > 0:
+            # Average the CPA values across matching rows
+            cpa_values: list[float] = []
+            for row in cb_result:
+                cpa_val = row.get("cpa")
+                if cpa_val is not None:
+                    try:
+                        cpa_values.append(float(cpa_val))
+                    except (ValueError, TypeError):
+                        pass
+            if cpa_values:
+                avg_cpa = sum(cpa_values) / len(cpa_values)
+                enrichment["cpa_benchmark"] = round(avg_cpa, 2)
+
+    except urllib.error.HTTPError as exc:
+        logger.warning(
+            "Nova channel_benchmarks query failed (HTTP %d) for category=%s",
+            exc.code, category,
+        )
+    except Exception:
+        logger.warning(
+            "Nova channel_benchmarks query failed for category=%s",
+            category, exc_info=True,
+        )
+
+    return enrichment
+
+
 def list_active_schedules() -> list[dict[str, Any]]:
     """Get all active schedules from cg_schedules.
 

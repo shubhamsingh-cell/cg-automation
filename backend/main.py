@@ -1484,12 +1484,39 @@ async def api_insights(req: InsightRequest) -> dict[str, str]:
         context_lines += "\nUse this context to make your recommendation more specific and actionable.\n"
         user_prompt += context_lines
 
+    # --- Nova enrichment: salary, demand, CPA benchmarks ---
+    nova_context = ""
+    try:
+        from supabase_store import get_nova_enrichment
+
+        enrichment = get_nova_enrichment(
+            location=req.location,
+            category=req.recommended_category,
+        )
+        nova_lines: list[str] = []
+        if enrichment.get("salary_range"):
+            nova_lines.append(f"- Market Salary Range: {enrichment['salary_range']}")
+        if enrichment.get("demand_level"):
+            nova_lines.append(f"- Market Demand: {enrichment['demand_level']}")
+        if enrichment.get("cpa_benchmark"):
+            nova_lines.append(f"- Industry CPA Benchmark: ${enrichment['cpa_benchmark']:.2f}")
+        if nova_lines:
+            nova_context = (
+                "\nMarket Intelligence (from Nova):\n"
+                + "\n".join(nova_lines)
+                + "\nUse this market data to contextualize the CPA and repost recommendation.\n"
+            )
+    except Exception:
+        logger.warning("Nova enrichment unavailable for %s / %s", req.location, req.recommended_category, exc_info=True)
+
+    user_prompt += nova_context
     user_prompt += "In 2 sentences: why repost now and one specific action tip."
 
     system_prompt = (
         "You are a Craigslist ad campaign analyst. You give specific, actionable "
-        "advice based on data. Be concise. Always end with one concrete action "
-        "the operator can take today."
+        "advice based on data. Be concise. When market salary, demand, or CPA "
+        "benchmark data is provided, reference it to strengthen your recommendation. "
+        "Always end with one concrete action the operator can take today."
     )
 
     try:
