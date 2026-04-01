@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SELL_CPA: float = 1.20
+DEFAULT_SELL_CPA: float = 1.20
+# Active CPA for the current analysis run (set by run_analysis, used by helpers)
+SELL_CPA: float = DEFAULT_SELL_CPA
 GLOBAL_AVG_MULTIPLIER: float = 3.60
 
 REQUIRED_COLUMNS: list[str] = [
@@ -773,13 +775,20 @@ def validate_input(df: pd.DataFrame) -> list[str]:
 # ====================================================================
 # MAIN PIPELINE -- run_analysis
 # ====================================================================
-def run_analysis(df: pd.DataFrame) -> dict[str, Any]:
+def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[str, Any]:
     """Execute the full analysis pipeline on a raw Excel DataFrame.
+
+    Args:
+        df: Raw Excel DataFrame with cumulative campaign data.
+        sell_cpa: Revenue per apply in USD (varies by client/campaign, default $1.20).
 
     Returns a dict with all output structures ready for API serialisation.
     """
+    global SELL_CPA
+    SELL_CPA = sell_cpa
+
     logger.info("=" * 60)
-    logger.info("CG Automation Engine -- Starting full analysis")
+    logger.info("CG Automation Engine -- Starting full analysis (CPA=$%.2f)", sell_cpa)
     logger.info("=" * 60)
 
     # Validate input

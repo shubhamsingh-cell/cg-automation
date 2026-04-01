@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import posthog from 'posthog-js';
 import { Upload as UploadIcon, FileSpreadsheet, CheckCircle2, Loader2, AlertCircle, X } from 'lucide-react';
 import { uploadFile } from '../utils/api';
 import { useAnalysis } from '../context/AnalysisContext';
@@ -78,6 +79,15 @@ export default function Upload() {
       clearInterval(stepInterval);
       setCurrentStep(STEPS.length - 1);
       loadAnalysis(data);
+
+      const sessionId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      posthog.identify(sessionId);
+      posthog.capture('file_uploaded', {
+        rows: data?.daily_action_plan?.length || 0,
+        locations: [...new Set((data?.daily_action_plan || []).map((r) => r.location))].length,
+        runs: data?.all_runs?.length || 0,
+      });
+
       setTimeout(() => navigate('/action-plan'), 800);
     } catch (err) {
       clearInterval(stepInterval);

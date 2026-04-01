@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
 import math
 import os
+import ssl
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from collections import OrderedDict
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Optional
 
 import numpy as np
 
@@ -109,6 +117,113 @@ def _get_anthropic_client() -> anthropic.Anthropic:
 
 
 # ---------------------------------------------------------------------------
+# Slack notifications (optional, non-blocking)
+# ---------------------------------------------------------------------------
+SLACK_WEBHOOK_URL: str = os.environ.get("SLACK_WEBHOOK_URL") or ""
+DEPLOYED_URL: str = os.environ.get("DEPLOYED_URL") or ""
+
+
+def _send_slack_webhook(payload: dict[str, Any]) -> None:
+    """POST a JSON payload to the Slack webhook URL.
+
+    Runs synchronously -- intended to be called from a daemon thread.
+    Logs warnings on failure but never raises.
+    """
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            SLACK_WEBHOOK_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                logger.warning("Slack webhook returned status %d", resp.status)
+    except Exception:
+        logger.warning("Slack notification failed", exc_info=True)
+
+
+def _build_analysis_slack_message(result: dict[str, Any], job_id: str) -> dict[str, Any]:
+    """Build a Slack message payload summarising the analysis result.
+
+    Args:
+        result: Sanitised analysis result dict.
+        job_id: UUID of the stored job.
+
+    Returns:
+        Slack webhook payload dict with text and blocks.
+    """
+    dap: list[dict[str, Any]] = result.get("daily_action_plan", [])
+    location_count: int = len(dap)
+
+    # Top 5 by Est Lifetime NR
+    sorted_dap = sorted(
+        dap,
+        key=lambda r: float(r.get("est_lifetime_nr", r.get("Est_Lifetime_NR", 0)) or 0),
+        reverse=True,
+    )
+    top5 = sorted_dap[:5]
+
+    top5_lines: list[str] = []
+    for i, rec in enumerate(top5, 1):
+        tier = rec.get("tier", rec.get("Tier", ""))
+        loc = rec.get("location", rec.get("Location", ""))
+        title = rec.get("recommended_title", rec.get("Best_Title", ""))
+        est_nr = float(rec.get("est_lifetime_nr", rec.get("Est_Lifetime_NR", 0)) or 0)
+        top5_lines.append(f"{i}. T{tier} | {loc} | {title} | ${est_nr:,.2f}")
+
+    # Totals from scorecard if available, otherwise sum from DAP
+    scorecard: dict[str, Any] = result.get("scorecard", {})
+    total_spend = scorecard.get("total_spend", scorecard.get("total_cost"))
+    total_nr = scorecard.get("total_nr", scorecard.get("total_lifetime_nr"))
+
+    # Fallback: sum from DAP
+    if total_spend is None:
+        total_spend = sum(
+            float(r.get("d1_cost", r.get("D1_Cost", 0)) or 0) for r in dap
+        )
+    if total_nr is None:
+        total_nr = sum(
+            float(r.get("est_lifetime_nr", r.get("Est_Lifetime_NR", 0)) or 0)
+            for r in dap
+        )
+
+    top5_text = "\n".join(top5_lines) if top5_lines else "(none)"
+
+    download_line = ""
+    if DEPLOYED_URL:
+        download_line = f"\n<{DEPLOYED_URL}/api/download/{job_id}|Download Excel>"
+
+    text = (
+        f"*CG Automation: Daily Action Plan Ready*\n"
+        f"Total locations to post: *{location_count}*\n\n"
+        f"*Top 5 by Est Lifetime NR:*\n{top5_text}\n\n"
+        f"Total Est Spend: *${float(total_spend):,.2f}*\n"
+        f"Total Est NR: *${float(total_nr):,.2f}*"
+        f"{download_line}"
+    )
+
+    return {"text": text}
+
+
+def _notify_slack_analysis(result: dict[str, Any], job_id: str) -> None:
+    """Send Slack notification for a completed analysis in a background thread.
+
+    Args:
+        result: Sanitised analysis result dict.
+        job_id: UUID of the stored job.
+    """
+    if not SLACK_WEBHOOK_URL:
+        return
+    payload = _build_analysis_slack_message(result, job_id)
+    thread = threading.Thread(target=_send_slack_webhook, args=(payload,), daemon=True)
+    thread.start()
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -133,6 +248,205 @@ class InsightRequest(BaseModel):
     mult_source: str
     mult_runs: int
     optimal_posts_per_week: int
+
+
+class ScheduleRequest(BaseModel):
+    """Payload for the POST /api/schedule endpoint."""
+
+    job_id: str
+    cron_expression: str = "0 6 * * 1"
+    webhook_url: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Constants -- Scheduler
+# ---------------------------------------------------------------------------
+MAX_SCHEDULED_JOBS: int = 10
+
+# Day-of-week mapping (cron 0=Sunday convention)
+_DOW_MAP: dict[int, int] = {
+    0: 6,  # cron Sunday -> Python weekday 6
+    1: 0,  # cron Monday -> Python weekday 0
+    2: 1,
+    3: 2,
+    4: 3,
+    5: 4,
+    6: 5,
+    7: 6,  # cron 7 also = Sunday
+}
+
+# ---------------------------------------------------------------------------
+# In-memory schedule store + helpers
+# ---------------------------------------------------------------------------
+_schedule_lock = threading.Lock()
+_schedule_store: dict[str, dict[str, Any]] = {}
+
+
+def _parse_simple_cron(expr: str) -> int:
+    """Parse a simplified cron expression and return interval in seconds.
+
+    Supports the format ``0 H * * D`` where *H* is hour (0-23) and *D* is
+    day-of-week (0-7, 0 and 7 = Sunday).  The interval is always exactly
+    7 days (604800 seconds) because only one weekday is specified.
+
+    Args:
+        expr: Cron-style string, e.g. ``"0 6 * * 1"``.
+
+    Returns:
+        Interval in seconds (always 604800 for a weekly schedule).
+
+    Raises:
+        ValueError: If the expression does not match the supported format.
+    """
+    parts = expr.strip().split()
+    if len(parts) != 5:
+        raise ValueError(
+            f"Cron expression must have 5 fields, got {len(parts)}: '{expr}'"
+        )
+    minute, hour, dom, month, dow = parts
+
+    if minute != "0":
+        raise ValueError("Only minute=0 is supported in simplified cron")
+    if dom != "*" or month != "*":
+        raise ValueError("Only day-of-month=* and month=* are supported")
+
+    try:
+        hour_int = int(hour)
+    except ValueError as exc:
+        raise ValueError(f"Invalid hour '{hour}' in cron expression") from exc
+    if not 0 <= hour_int <= 23:
+        raise ValueError(f"Hour must be 0-23, got {hour_int}")
+
+    try:
+        dow_int = int(dow)
+    except ValueError as exc:
+        raise ValueError(f"Invalid day-of-week '{dow}' in cron expression") from exc
+    if dow_int not in _DOW_MAP:
+        raise ValueError(f"Day-of-week must be 0-7, got {dow_int}")
+
+    # Weekly interval
+    return 7 * 24 * 60 * 60
+
+
+def _seconds_until_next(cron_expr: str) -> float:
+    """Return seconds from now until the next occurrence of the cron time.
+
+    Args:
+        cron_expr: Simplified cron string ``"0 H * * D"``.
+
+    Returns:
+        Positive float representing seconds until the next matching moment.
+    """
+    parts = cron_expr.strip().split()
+    hour_int = int(parts[1])
+    dow_int = int(parts[4])
+    target_weekday = _DOW_MAP[dow_int]
+
+    now = datetime.now()
+    days_ahead = target_weekday - now.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+
+    candidate = now.replace(
+        hour=hour_int, minute=0, second=0, microsecond=0
+    ) + timedelta(days=days_ahead)
+
+    if candidate <= now:
+        candidate += timedelta(weeks=1)
+
+    return (candidate - now).total_seconds()
+
+
+def _fire_scheduled_job(schedule_id: str) -> None:
+    """Execute a scheduled re-analysis and optionally POST results to webhook.
+
+    Runs inside a daemon thread spawned by ``threading.Timer``.  Re-runs
+    ``engine.run_analysis`` on the stored source DataFrame, updates the
+    job store with fresh results, and reschedules itself.
+
+    Args:
+        schedule_id: Key into ``_schedule_store``.
+    """
+    with _schedule_lock:
+        entry = _schedule_store.get(schedule_id)
+        if entry is None:
+            return  # cancelled
+
+    job_id: str = entry["job_id"]
+    webhook_url: str | None = entry.get("webhook_url")
+    cron_expr: str = entry["cron_expression"]
+
+    logger.info("Scheduled job %s firing for job_id=%s", schedule_id, job_id)
+
+    stored = job_store.get(job_id)
+    if stored is None:
+        logger.warning(
+            "Scheduled job %s: original job_id=%s no longer in store; skipping",
+            schedule_id, job_id,
+        )
+    else:
+        last_df = stored.get("_source_df")
+        sell_cpa: float = stored.get("_sell_cpa", 1.20)
+        if last_df is not None:
+            try:
+                result = engine.run_analysis(last_df.copy(), sell_cpa=sell_cpa)
+                result = _sanitize_for_json(result)
+                result["job_id"] = job_id
+                result["_source_df"] = last_df
+                result["_sell_cpa"] = sell_cpa
+                job_store[job_id] = result
+                logger.info("Scheduled re-analysis complete for job_id=%s", job_id)
+
+                if webhook_url:
+                    scorecard = result.get("scorecard", {})
+                    payload = {
+                        "schedule_id": schedule_id,
+                        "job_id": job_id,
+                        "ran_at": datetime.now().isoformat(),
+                        "scorecard": scorecard,
+                    }
+                    try:
+                        data = json.dumps(payload).encode("utf-8")
+                        wh_req = urllib.request.Request(
+                            webhook_url,
+                            data=data,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(wh_req, timeout=15) as wh_resp:
+                            logger.info(
+                                "Webhook POST to %s returned status %d",
+                                webhook_url, wh_resp.status,
+                            )
+                    except Exception:
+                        logger.error(
+                            "Webhook POST to %s failed", webhook_url, exc_info=True,
+                        )
+            except Exception:
+                logger.error(
+                    "Scheduled re-analysis failed for job_id=%s", job_id, exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Scheduled job %s: no source DataFrame for job_id=%s",
+                schedule_id, job_id,
+            )
+
+    # Reschedule for next week
+    with _schedule_lock:
+        if schedule_id not in _schedule_store:
+            return  # cancelled while running
+
+        delay = _seconds_until_next(cron_expr)
+        timer = threading.Timer(delay, _fire_scheduled_job, args=[schedule_id])
+        timer.daemon = True
+        timer.start()
+        _schedule_store[schedule_id]["timer"] = timer
+        _schedule_store[schedule_id]["next_run"] = (
+            datetime.now() + timedelta(seconds=delay)
+        ).isoformat()
+        _schedule_store[schedule_id]["last_run"] = datetime.now().isoformat()
+        logger.info("Rescheduled %s: next run in %.0f seconds", schedule_id, delay)
 
 
 # ===================================================================
@@ -579,15 +893,15 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/api/analyse")
-async def api_analyse(file: UploadFile = File(...)) -> dict[str, Any]:
+async def api_analyse(
+    file: UploadFile = File(...),
+    sell_cpa: float = 1.20,
+) -> dict[str, Any]:
     """Upload an Excel file and run the full CG Automation analysis.
-
-    Reads the Excel with pandas, delegates to engine.run_analysis(df),
-    stores the result in memory keyed by a uuid4 job_id, and returns
-    the full JSON response.
 
     Args:
         file: Uploaded Excel file (multipart/form-data).
+        sell_cpa: Revenue per apply in USD (varies by client/campaign, default $1.20).
 
     Returns:
         Full JSON analysis with scorecard, daily action plan, and all views.
@@ -605,7 +919,7 @@ async def api_analyse(file: UploadFile = File(...)) -> dict[str, Any]:
         ) from exc
 
     try:
-        result = engine.run_analysis(df)
+        result = engine.run_analysis(df, sell_cpa=sell_cpa)
     except ValueError as exc:
         logger.error("Validation error during analysis", exc_info=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -620,9 +934,46 @@ async def api_analyse(file: UploadFile = File(...)) -> dict[str, Any]:
 
     job_id = str(uuid.uuid4())
     result["job_id"] = job_id
+    # Store source data for scheduled re-analysis
+    result["_source_df"] = df
+    result["_sell_cpa"] = sell_cpa
     job_store[job_id] = result
 
-    return result
+    # Fire-and-forget Slack notification (non-blocking)
+    _notify_slack_analysis(result, job_id)
+
+    # Return JSON-safe copy (strip internal DataFrame / sell_cpa keys)
+    response = {k: v for k, v in result.items() if not k.startswith("_")}
+    return response
+
+
+@app.post("/api/test-slack")
+async def api_test_slack() -> dict[str, str]:
+    """Send a test message to the configured Slack webhook.
+
+    Returns 200 with status even if SLACK_WEBHOOK_URL is not set (returns a warning).
+    """
+    if not SLACK_WEBHOOK_URL:
+        return {"status": "skipped", "reason": "SLACK_WEBHOOK_URL not configured"}
+
+    payload: dict[str, str] = {
+        "text": "CG Automation: Slack integration test -- webhook is working!"
+    }
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            SLACK_WEBHOOK_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                return {"status": "ok", "message": "Test message sent to Slack"}
+            return {"status": "error", "message": f"Slack returned status {resp.status}"}
+    except Exception as exc:
+        logger.warning("Slack test failed", exc_info=True)
+        return {"status": "error", "message": str(exc)}
 
 
 @app.post("/api/insights")
@@ -720,6 +1071,131 @@ async def api_download(job_id: str) -> StreamingResponse:
             "Content-Disposition": f'attachment; filename="{filename}"'
         },
     )
+
+
+# ===================================================================
+# SCHEDULED RE-ANALYSIS ENDPOINTS
+# ===================================================================
+
+
+@app.post("/api/schedule")
+async def api_schedule(req: ScheduleRequest) -> dict[str, Any]:
+    """Schedule a recurring re-analysis for an existing job.
+
+    Creates a ``threading.Timer``-based weekly schedule that re-runs
+    ``engine.run_analysis`` on the original uploaded data and optionally
+    POSTs the scorecard summary to a webhook URL.
+
+    Args:
+        req: ScheduleRequest with job_id, optional cron_expression and webhook_url.
+
+    Returns:
+        Dict with schedule_id, next_run ISO timestamp, and interval_seconds.
+    """
+    # Validate job exists
+    stored = job_store.get(req.job_id)
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job {req.job_id} not found or expired",
+        )
+
+    if stored.get("_source_df") is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job {req.job_id} has no stored source data for re-analysis",
+        )
+
+    # Validate cron expression
+    try:
+        interval_seconds = _parse_simple_cron(req.cron_expression)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Enforce max schedules
+    with _schedule_lock:
+        if len(_schedule_store) >= MAX_SCHEDULED_JOBS:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Maximum of {MAX_SCHEDULED_JOBS} scheduled jobs reached",
+            )
+
+        schedule_id = str(uuid.uuid4())
+        delay = _seconds_until_next(req.cron_expression)
+        next_run = (datetime.now() + timedelta(seconds=delay)).isoformat()
+
+        timer = threading.Timer(delay, _fire_scheduled_job, args=[schedule_id])
+        timer.daemon = True
+        timer.start()
+
+        _schedule_store[schedule_id] = {
+            "schedule_id": schedule_id,
+            "job_id": req.job_id,
+            "cron_expression": req.cron_expression,
+            "webhook_url": req.webhook_url,
+            "interval_seconds": interval_seconds,
+            "next_run": next_run,
+            "last_run": None,
+            "created_at": datetime.now().isoformat(),
+            "timer": timer,
+        }
+
+    logger.info(
+        "Created schedule %s for job %s (next run in %.0f s)",
+        schedule_id, req.job_id, delay,
+    )
+
+    return {
+        "schedule_id": schedule_id,
+        "job_id": req.job_id,
+        "cron_expression": req.cron_expression,
+        "interval_seconds": interval_seconds,
+        "next_run": next_run,
+    }
+
+
+@app.get("/api/schedules")
+async def api_list_schedules() -> list[dict[str, Any]]:
+    """List all active scheduled re-analysis jobs.
+
+    Returns:
+        List of schedule entries (timer object excluded from response).
+    """
+    with _schedule_lock:
+        schedules: list[dict[str, Any]] = []
+        for entry in _schedule_store.values():
+            schedules.append(
+                {k: v for k, v in entry.items() if k != "timer"}
+            )
+    logger.info("Listed %d active schedules", len(schedules))
+    return schedules
+
+
+@app.delete("/api/schedule/{schedule_id}")
+async def api_cancel_schedule(schedule_id: str) -> dict[str, str]:
+    """Cancel and remove a scheduled re-analysis job.
+
+    Args:
+        schedule_id: UUID of the schedule to cancel.
+
+    Returns:
+        Confirmation dict with schedule_id and status.
+    """
+    with _schedule_lock:
+        entry = _schedule_store.pop(schedule_id, None)
+
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schedule {schedule_id} not found",
+        )
+
+    timer: threading.Timer = entry.get("timer")
+    if timer is not None:
+        timer.cancel()
+
+    logger.info("Cancelled schedule %s (job_id=%s)", schedule_id, entry["job_id"])
+    return {"schedule_id": schedule_id, "status": "cancelled"}
 
 
 # ---------------------------------------------------------------------------

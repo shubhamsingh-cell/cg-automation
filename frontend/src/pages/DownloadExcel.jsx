@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import posthog from 'posthog-js';
 import { Download, FileSpreadsheet, CheckCircle2 } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import { getDownloadUrl } from '../utils/api';
@@ -21,6 +22,7 @@ export default function DownloadExcel() {
 
   function handleDownload() {
     if (!jobId) return;
+    posthog.capture('excel_downloaded', { job_id: jobId });
     const url = getDownloadUrl(jobId);
     const a = document.createElement('a');
     a.href = url;

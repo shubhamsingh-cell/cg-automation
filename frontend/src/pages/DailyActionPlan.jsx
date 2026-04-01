@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import posthog from 'posthog-js';
 import { Sparkles, Loader2, CheckCircle, AlertTriangle, Calendar } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import TierBadge from '../components/TierBadge';
@@ -27,9 +28,16 @@ export default function DailyActionPlan() {
     };
   }, [rows]);
 
+  useEffect(() => {
+    if (rows.length > 0) {
+      posthog.capture('action_plan_viewed', { locations_count: rows.length });
+    }
+  }, [rows.length]);
+
   async function loadInsight(row) {
     const key = `${row.location}-${row.recommended_title}-${row.recommended_category}`;
     if (insightsCache[key] || loadingInsights[key]) return;
+    posthog.capture('insight_requested', { location: row.location, tier: row.tier });
     setLoadingInsights((p) => ({ ...p, [key]: true }));
     try {
       const insight = await fetchInsight({

@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import posthog from 'posthog-js';
 import { ArrowLeft, MapPin, TrendingUp, Calendar, Award } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import TierBadge from '../components/TierBadge';
@@ -52,6 +53,10 @@ export default function LocationDetail() {
       return { ...item, curve_data: [] };
     });
   }, [data, location]);
+
+  useEffect(() => {
+    posthog.capture('location_detail_viewed', { location });
+  }, [location]);
 
   const titleColumns = [
     { key: 'title', label: 'Title', render: (v) => <span className="text-white">{v}</span> },
