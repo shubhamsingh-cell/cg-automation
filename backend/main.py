@@ -32,6 +32,7 @@ from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 
 import engine
+import supabase_store
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -892,6 +893,36 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "version": "1.0.0"}
 
 
+def _persist_to_supabase(
+    result: dict[str, Any], job_id: str, filename: str, sell_cpa: float
+) -> None:
+    """Persist job + action plan to Supabase in a background thread.
+
+    Non-blocking: failures are logged but never raise.
+
+    Args:
+        result: Sanitised analysis result dict.
+        job_id: UUID of the stored job.
+        filename: Original uploaded filename.
+        sell_cpa: Revenue per apply used.
+    """
+    def _do_persist() -> None:
+        try:
+            scorecard: dict[str, Any] = result.get("scorecard", {})
+            supabase_store.save_job(job_id, filename, sell_cpa, scorecard)
+
+            action_plan: list[dict[str, Any]] = result.get("daily_action_plan", [])
+            if action_plan:
+                supabase_store.save_action_plan(job_id, action_plan)
+
+            logger.info("Supabase persistence complete for job_id=%s", job_id)
+        except Exception:
+            logger.error("Supabase persistence failed for job_id=%s", job_id, exc_info=True)
+
+    thread = threading.Thread(target=_do_persist, daemon=True)
+    thread.start()
+
+
 @app.post("/api/analyse")
 async def api_analyse(
     file: UploadFile = File(...),
@@ -941,6 +972,9 @@ async def api_analyse(
 
     # Fire-and-forget Slack notification (non-blocking)
     _notify_slack_analysis(result, job_id)
+
+    # Fire-and-forget Supabase persistence (non-blocking)
+    _persist_to_supabase(result, job_id, file.filename or "", sell_cpa)
 
     # Return JSON-safe copy (strip internal DataFrame / sell_cpa keys)
     response = {k: v for k, v in result.items() if not k.startswith("_")}
@@ -1144,6 +1178,16 @@ async def api_schedule(req: ScheduleRequest) -> dict[str, Any]:
         "Created schedule %s for job %s (next run in %.0f s)",
         schedule_id, req.job_id, delay,
     )
+
+    # Persist schedule to Supabase (background, non-blocking)
+    threading.Thread(
+        target=lambda: _safe_call(
+            supabase_store.save_schedule,
+            schedule_id, req.job_id, req.cron_expression,
+            req.webhook_url or "", next_run,
+        ),
+        daemon=True,
+    ).start()
 
     return {
         "schedule_id": schedule_id,
