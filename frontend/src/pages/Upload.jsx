@@ -413,13 +413,13 @@ export default function Upload() {
                     <Sparkles size={22} className="text-[#6BB3CD]" />
                   </div>
                   <h2 className="text-xl font-bold text-white">Campaign Context</h2>
-                  <p className="text-[#555] text-sm mt-1.5">Optional -- improves AI-powered insights</p>
+                  <p className="text-[#555] text-sm mt-1.5">Client name is required for benchmark tracking</p>
                 </div>
 
                 <div className="space-y-5">
                   {/* Client Name */}
                   <div>
-                    <label className={labelCls}>Client Name</label>
+                    <label className={labelCls}>Client Name <span className="text-[#C0392B]">*</span></label>
                     <input
                       type="text"
                       placeholder="e.g., Apex Group"
@@ -427,7 +427,9 @@ export default function Upload() {
                       onChange={(e) => setClientName(e.target.value)}
                       className={inputCls}
                       aria-label="Client name"
+                      required
                     />
+                    <p className="text-[10px] text-[#555] mt-1">Used to separate benchmarks per client -- each client gets their own historical baseline</p>
                   </div>
 
                   {/* Job Category -- card grid */}
