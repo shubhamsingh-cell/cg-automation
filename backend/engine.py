@@ -147,7 +147,9 @@ def summarise_post_runs(daily: pd.DataFrame) -> pd.DataFrame:
         last = g.iloc[-1]
         post_id = g.name  # groupby key = Post ID
 
-        d1_cost = g["Media_Cost"].sum()
+        # S37 fix: CL charges once per post. Use day-1 cost, not sum across
+        # all daily rows (which inflated spend by Nx when Media_Cost repeats).
+        d1_cost = d1["Media_Cost"]
         d1_impressions = d1["Daily_Impressions"]
         d1_clicks = d1["Daily_Clicks"]
         d1_applies = d1["Daily_Applies"]

@@ -122,12 +122,7 @@ export default function LocationDetail() {
           sub={locIntel?.cat_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.cat_avg_nr)}` : undefined}
           highlight
         />
-        <SummaryItem
-          label="Best Day"
-          value={locIntel?.best_day || actionRow?.best_day || '--'}
-          sub={locIntel?.day_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.day_avg_nr)}` : undefined}
-          highlight
-        />
+        {/* Best Day removed per Ayushi feedback (S37) -- was limiting posting */}
         <SummaryItem label="Multiplier" value={multiplierRow ? formatMultiplier(multiplierRow.multiplier) : '--'} sub={multiplierRow?.mult_source || '--'} />
       </div>
 
@@ -152,12 +147,7 @@ export default function LocationDetail() {
         </Section>
       )}
 
-      {/* Best Day */}
-      {locIntel?.day_rankings && (
-        <Section title="Day of Week Performance">
-          <DataTable columns={dayColumns} data={locIntel.day_rankings} />
-        </Section>
-      )}
+      {/* Day of Week section removed per Ayushi feedback (S37) */}
 
       {/* Combo Matrix */}
       {locIntel?.combo_matrix && locIntel.combo_matrix.length > 0 && (

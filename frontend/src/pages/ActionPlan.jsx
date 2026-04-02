@@ -294,7 +294,8 @@ export default function ActionPlan() {
             searchPlaceholder="Search locations, titles, categories..."
             searchFields={['location', 'title', 'category', 'recommended_title', 'recommended_category']}
             onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)}
-            rowClassName={(row) => getTierConfig(row.tier).rowBg || ''} />
+            rowClassName={(row) => getTierConfig(row.tier).rowBg || ''}
+            maxHeight="calc(100vh - 340px)" />
         </div>
       )}
 
@@ -304,7 +305,8 @@ export default function ActionPlan() {
           searchPlaceholder="Search locations, titles..."
           searchFields={['location', 'title', 'category']}
           onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)}
-          rowClassName={(row) => getTierConfig(row.tier).rowBg || ''} />
+          rowClassName={(row) => getTierConfig(row.tier).rowBg || ''}
+          maxHeight="calc(100vh - 260px)" />
       )}
 
       {/* Skip */}
@@ -313,7 +315,8 @@ export default function ActionPlan() {
           searchPlaceholder="Search locations, reasons..."
           searchFields={['location', 'title', 'category', 'skip_reason']}
           onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)}
-          rowClassName={(row) => getTierConfig(row.tier).rowBg || ''} />
+          rowClassName={(row) => getTierConfig(row.tier).rowBg || ''}
+          maxHeight="calc(100vh - 260px)" />
       )}
 
       {/* Conflicts */}
@@ -321,7 +324,8 @@ export default function ActionPlan() {
         <DataTable columns={conflictCols} data={conflictRows} searchable
           searchPlaceholder="Search locations, titles..."
           searchFields={['location', 'title', 'category', 'winner_title', 'winner_category']}
-          onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)} />
+          onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)}
+          maxHeight="calc(100vh - 260px)" />
       )}
     </div>
   );

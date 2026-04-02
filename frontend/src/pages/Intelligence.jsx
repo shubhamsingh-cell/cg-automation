@@ -10,7 +10,7 @@ import { formatCurrency, formatPercent, formatMultiplier, formatNumber, nrColorC
 const TABS = [
   { key: 'titles', label: 'Titles', icon: Type },
   { key: 'categories', label: 'Categories', icon: FolderOpen },
-  { key: 'bestday', label: 'Best Day', icon: Calendar },
+  // Best Day tab removed per Ayushi feedback (S37) -- was limiting posting decisions
   { key: 'locations', label: 'Locations', icon: MapPin },
   { key: 'frequency', label: 'Frequency', icon: TrendingUp },
   { key: 'trends', label: 'Trends', icon: Activity },
@@ -128,7 +128,7 @@ export default function Intelligence() {
           </div>
           {activeTab === 'titles' && <TitlesTab intel={intel} locations={locations} navigate={navigate} />}
           {activeTab === 'categories' && <CategoriesTab intel={intel} locations={locations} navigate={navigate} />}
-          {activeTab === 'bestday' && <BestDayTab intel={intel} />}
+          {/* Best Day tab removed per Ayushi feedback (S37) */}
           {activeTab === 'locations' && <LocationsTab data={data} navigate={navigate} />}
           {activeTab === 'frequency' && <FrequencyTab data={data} navigate={navigate} />}
           {activeTab === 'trends' && <TrendsTab data={data} />}
