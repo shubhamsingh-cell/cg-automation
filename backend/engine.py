@@ -878,6 +878,148 @@ def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[s
     return result
 
 
+# ====================================================================
+# BENCHMARKS -- Extract & Compare
+# ====================================================================
+
+def extract_benchmarks(runs: pd.DataFrame) -> list[dict[str, Any]]:
+    """Extract benchmark data from analysis runs for Supabase storage.
+
+    Aggregates per location+title+category combo: avg NR, GR, profit %,
+    applies, cost, and multiplier.
+
+    Args:
+        runs: The full runs DataFrame from the analysis pipeline.
+
+    Returns:
+        List of benchmark dicts ready for supabase_store.save_benchmarks().
+    """
+    if runs.empty:
+        return []
+
+    paid = runs[runs["D1_Cost"] > 0].copy()
+    if paid.empty:
+        return []
+
+    benchmarks: list[dict[str, Any]] = []
+
+    # Group by Location + Title + Category
+    group_cols = ["Location_key", "Location", "Title", "Category"]
+    available_cols = [c for c in group_cols if c in paid.columns]
+    if len(available_cols) < 2:
+        return []
+
+    grouped = paid.groupby(["Location_key", "Title", "Category"], dropna=False)
+
+    for (loc_key, title, category), grp in grouped:
+        location = grp["Location"].iloc[0] if "Location" in grp.columns else loc_key
+        avg_nr = grp["Total_NR"].mean() if "Total_NR" in grp.columns else 0
+        avg_gr = grp["Total_GR"].mean() if "Total_GR" in grp.columns else 0
+        avg_cost = grp["D1_Cost"].mean() if "D1_Cost" in grp.columns else 0
+        avg_applies = grp["Total_Applies"].mean() if "Total_Applies" in grp.columns else 0
+        avg_profit = grp["Profit_Pct"].mean() if "Profit_Pct" in grp.columns else 0
+        avg_mult = grp["Multiplier_Used"].mean() if "Multiplier_Used" in grp.columns else 1.0
+
+        benchmarks.append({
+            "location": str(location),
+            "title": str(title),
+            "category": str(category),
+            "avg_nr": float(avg_nr) if not np.isnan(avg_nr) else 0,
+            "avg_gr": float(avg_gr) if not np.isnan(avg_gr) else 0,
+            "avg_profit_pct": float(avg_profit) if not np.isnan(avg_profit) else 0,
+            "avg_applies": float(avg_applies) if not np.isnan(avg_applies) else 0,
+            "avg_cost": float(avg_cost) if not np.isnan(avg_cost) else 0,
+            "avg_multiplier": float(avg_mult) if not np.isnan(avg_mult) else 1.0,
+            "sample_size": len(grp),
+            "total_runs": len(grp),
+            "period": "all_time",
+        })
+
+    logger.info(f"  Extracted {len(benchmarks)} benchmark combos from {len(paid)} paid runs")
+    return benchmarks
+
+
+def compare_with_benchmarks(
+    daily_action_plan: list[dict[str, Any]],
+    benchmark_data: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Enrich the daily action plan with benchmark comparisons.
+
+    For each location in the action plan, finds matching benchmarks and
+    adds comparison fields showing how current performance compares to
+    historical baselines.
+
+    Args:
+        daily_action_plan: The DAP from build_daily_action_plan().
+        benchmark_data: List of benchmark dicts from Supabase.
+
+    Returns:
+        The same daily_action_plan list with added benchmark fields.
+    """
+    if not benchmark_data:
+        return daily_action_plan
+
+    # Build lookup: location -> list of benchmarks
+    bm_by_loc: dict[str, list[dict[str, Any]]] = {}
+    for bm in benchmark_data:
+        loc = str(bm.get("location", "")).strip().lower()
+        if loc:
+            bm_by_loc.setdefault(loc, []).append(bm)
+
+    for item in daily_action_plan:
+        loc = str(item.get("Location", item.get("location", ""))).strip().lower()
+        loc_bms = bm_by_loc.get(loc, [])
+
+        if not loc_bms:
+            item["Benchmark_Available"] = False
+            continue
+
+        item["Benchmark_Available"] = True
+
+        # Aggregate all benchmarks for this location
+        total_runs = sum(bm.get("total_runs", 0) for bm in loc_bms)
+        avg_nr_hist = (
+            sum(bm.get("avg_nr", 0) * bm.get("total_runs", 1) for bm in loc_bms)
+            / max(total_runs, 1)
+        )
+        avg_profit_hist = (
+            sum(bm.get("avg_profit_pct", 0) * bm.get("total_runs", 1) for bm in loc_bms)
+            / max(total_runs, 1)
+        )
+        avg_cost_hist = (
+            sum(bm.get("avg_cost", 0) * bm.get("total_runs", 1) for bm in loc_bms)
+            / max(total_runs, 1)
+        )
+
+        item["Benchmark_Hist_Avg_NR"] = round(avg_nr_hist, 2)
+        item["Benchmark_Hist_Avg_Profit"] = round(avg_profit_hist, 1)
+        item["Benchmark_Hist_Avg_Cost"] = round(avg_cost_hist, 2)
+        item["Benchmark_Total_Runs"] = total_runs
+
+        # Compare current est_lifetime_nr vs historical avg
+        current_nr = item.get("Est_Lifetime_NR", 0)
+        if avg_nr_hist != 0:
+            nr_delta_pct = ((current_nr - avg_nr_hist) / abs(avg_nr_hist)) * 100
+            item["Benchmark_NR_Delta_Pct"] = round(nr_delta_pct, 1)
+            if nr_delta_pct > 20:
+                item["Benchmark_Signal"] = "above_avg"
+            elif nr_delta_pct < -20:
+                item["Benchmark_Signal"] = "below_avg"
+            else:
+                item["Benchmark_Signal"] = "on_track"
+        else:
+            item["Benchmark_NR_Delta_Pct"] = 0
+            item["Benchmark_Signal"] = "no_baseline"
+
+        # Find best historical combo for this location
+        best_bm = max(loc_bms, key=lambda b: b.get("avg_nr", 0))
+        item["Benchmark_Best_Title"] = best_bm.get("title", "")
+        item["Benchmark_Best_Category"] = best_bm.get("category", "")
+        item["Benchmark_Best_NR"] = round(best_bm.get("avg_nr", 0), 2)
+
+    return daily_action_plan
+
+
 def _runs_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert a runs DataFrame to a list of JSON-safe dicts."""
     out = df.copy()

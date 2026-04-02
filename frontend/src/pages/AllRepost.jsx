@@ -47,13 +47,8 @@ export default function AllRepost() {
     { key: 'd1_applies', label: 'D1 Applies', align: 'right', render: (v) => v?.toFixed(1) ?? '--' },
     { key: 'd1_nr', label: 'D1 NR', align: 'right', render: (v) => <span className={nrColorClass(v)}>{formatCurrency(v)}</span> },
     { key: 'est_lifetime_nr', label: 'Life NR', align: 'right', render: (v) => <span className={`font-semibold ${nrColorClass(v)}`}>{formatCurrency(v)}</span> },
-    { key: 'multiplier', label: 'Mult', align: 'right', render: (v) => formatMultiplier(v) },
+    { key: 'multiplier_used', label: 'Mult', align: 'right', render: (v) => formatMultiplier(v) },
     { key: 'mult_source', label: 'Source', render: (v) => <span className="text-xs text-[#666]">{v || '--'}</span> },
-    { key: 'best_day', label: 'Best Day' },
-    { key: 'today_good', label: 'Today?', align: 'center', render: (_, row) => {
-      const good = row.best_day?.toLowerCase() === today.toLowerCase();
-      return good ? <span className="text-[#1E8449]">Yes</span> : <span className="text-[#E67E22]">No</span>;
-    }},
     { key: 'optimal_posts_per_week', label: 'Posts/Wk', align: 'center', render: (v) => v ? `${v}x` : '--' },
   ];
 

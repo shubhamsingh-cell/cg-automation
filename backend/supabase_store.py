@@ -56,13 +56,39 @@ are not set -- the app continues to work with in-memory storage only.
 --     created_at TIMESTAMPTZ DEFAULT NOW()
 -- );
 --
+-- CREATE TABLE IF NOT EXISTS cg_benchmarks (
+--     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--     client_name TEXT NOT NULL DEFAULT 'default',
+--     location TEXT NOT NULL,
+--     title TEXT,
+--     category TEXT,
+--     day_of_week TEXT,
+--     avg_nr NUMERIC DEFAULT 0,
+--     avg_gr NUMERIC DEFAULT 0,
+--     avg_profit_pct NUMERIC DEFAULT 0,
+--     avg_applies NUMERIC DEFAULT 0,
+--     avg_cost NUMERIC DEFAULT 0,
+--     avg_multiplier NUMERIC DEFAULT 1.0,
+--     sample_size INTEGER DEFAULT 0,
+--     total_runs INTEGER DEFAULT 0,
+--     period TEXT DEFAULT 'all_time',
+--     first_seen TIMESTAMPTZ DEFAULT NOW(),
+--     last_updated TIMESTAMPTZ DEFAULT NOW(),
+--     UNIQUE(client_name, location, title, category)
+-- );
+--
+-- CREATE INDEX idx_cg_benchmarks_location ON cg_benchmarks(location);
+-- CREATE INDEX idx_cg_benchmarks_client ON cg_benchmarks(client_name);
+--
 -- ALTER TABLE cg_jobs ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE cg_action_plans ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE cg_schedules ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE cg_benchmarks ENABLE ROW LEVEL SECURITY;
 --
 -- CREATE POLICY "Service role full access" ON cg_jobs FOR ALL USING (auth.role() = 'service_role');
 -- CREATE POLICY "Service role full access" ON cg_action_plans FOR ALL USING (auth.role() = 'service_role');
 -- CREATE POLICY "Service role full access" ON cg_schedules FOR ALL USING (auth.role() = 'service_role');
+-- CREATE POLICY "Service role full access" ON cg_benchmarks FOR ALL USING (auth.role() = 'service_role');
 """
 
 from __future__ import annotations
@@ -514,6 +540,147 @@ def get_nova_enrichment(
         )
 
     return enrichment
+
+
+# ---------------------------------------------------------------------------
+# cg_benchmarks -- Historical performance baselines
+# ---------------------------------------------------------------------------
+
+def save_benchmarks(
+    benchmarks: list[dict[str, Any]],
+    client_name: str = "default",
+) -> int:
+    """Upsert benchmark rows into cg_benchmarks.
+
+    Each benchmark row represents aggregated historical performance for a
+    location+title+category combo. On conflict (same client+location+title+category),
+    the row is updated with the latest aggregated values.
+
+    Args:
+        benchmarks: List of dicts with keys: location, title, category,
+            avg_nr, avg_gr, avg_profit_pct, avg_applies, avg_cost,
+            avg_multiplier, sample_size, total_runs.
+        client_name: Client identifier for multi-tenant support.
+
+    Returns:
+        Number of rows upserted.
+    """
+    if not _configured() or not benchmarks:
+        return 0
+
+    rows: list[dict[str, Any]] = []
+    for b in benchmarks:
+        rows.append({
+            "client_name": client_name,
+            "location": b.get("location", ""),
+            "title": b.get("title", ""),
+            "category": b.get("category", ""),
+            "day_of_week": b.get("day_of_week"),
+            "avg_nr": round(b.get("avg_nr", 0), 2),
+            "avg_gr": round(b.get("avg_gr", 0), 2),
+            "avg_profit_pct": round(b.get("avg_profit_pct", 0), 1),
+            "avg_applies": round(b.get("avg_applies", 0), 2),
+            "avg_cost": round(b.get("avg_cost", 0), 2),
+            "avg_multiplier": round(b.get("avg_multiplier", 1.0), 3),
+            "sample_size": b.get("sample_size", 0),
+            "total_runs": b.get("total_runs", 0),
+            "period": b.get("period", "all_time"),
+            "last_updated": "now()",
+        })
+
+    upserted = 0
+    chunk_size = 100
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i : i + chunk_size]
+        result = _supabase_request(
+            "POST", "cg_benchmarks",
+            body=chunk,
+            headers_extra={
+                "Prefer": "return=representation,resolution=merge-duplicates",
+            },
+            params={"on_conflict": "client_name,location,title,category"},
+        )
+        if result and isinstance(result, list):
+            upserted += len(result)
+
+    logger.info("Benchmarks upserted: %d rows for client=%s", upserted, client_name)
+    return upserted
+
+
+def load_benchmarks(
+    client_name: str = "default",
+    locations: list[str] | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    """Load benchmark rows from cg_benchmarks.
+
+    Args:
+        client_name: Client identifier.
+        locations: Optional list of locations to filter by.
+            If None, loads all benchmarks for the client.
+        limit: Max rows to return.
+
+    Returns:
+        List of benchmark dicts.
+    """
+    if not _configured():
+        return []
+
+    params: dict[str, str] = {
+        "select": "*",
+        "client_name": f"eq.{client_name}",
+        "order": "location.asc,avg_nr.desc",
+        "limit": str(limit),
+    }
+
+    # Filter by locations if provided
+    if locations:
+        loc_filter = ",".join(locations)
+        params["location"] = f"in.({loc_filter})"
+
+    result = _supabase_request("GET", "cg_benchmarks", params=params)
+    if result and isinstance(result, list):
+        logger.info("Loaded %d benchmark rows for client=%s", len(result), client_name)
+        return result
+    return []
+
+
+def get_benchmark_summary(
+    client_name: str = "default",
+) -> dict[str, Any]:
+    """Get a summary of benchmarks for a client.
+
+    Returns:
+        Dict with total_locations, total_combos, avg_nr, avg_profit_pct,
+        last_updated.
+    """
+    if not _configured():
+        return {}
+
+    result = _supabase_request(
+        "GET", "cg_benchmarks",
+        params={
+            "select": "location,avg_nr,avg_profit_pct,last_updated",
+            "client_name": f"eq.{client_name}",
+            "order": "last_updated.desc",
+            "limit": "5000",
+        },
+    )
+
+    if not result or not isinstance(result, list) or len(result) == 0:
+        return {}
+
+    locations = set(r.get("location", "") for r in result)
+    avg_nr_vals = [r.get("avg_nr", 0) for r in result if r.get("avg_nr")]
+    avg_profit_vals = [r.get("avg_profit_pct", 0) for r in result if r.get("avg_profit_pct")]
+
+    return {
+        "total_locations": len(locations),
+        "total_combos": len(result),
+        "overall_avg_nr": round(sum(avg_nr_vals) / len(avg_nr_vals), 2) if avg_nr_vals else 0,
+        "overall_avg_profit": round(sum(avg_profit_vals) / len(avg_profit_vals), 1) if avg_profit_vals else 0,
+        "last_updated": result[0].get("last_updated", ""),
+    }
 
 
 def list_active_schedules() -> list[dict[str, Any]]:

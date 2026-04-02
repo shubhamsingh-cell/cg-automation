@@ -107,23 +107,6 @@ export default function DailyActionPlan() {
     { key: 'recommended_title', label: 'Title', render: (v) => <span className="text-white">{v}</span> },
     { key: 'recommended_category', label: 'Category' },
     {
-      key: 'best_day',
-      label: 'Best Day',
-      render: (v) => {
-        const isToday = v?.toLowerCase() === today.toLowerCase();
-        return (
-          <span className="flex items-center gap-1.5">
-            {isToday ? (
-              <CheckCircle size={13} className="text-[#1E8449]" />
-            ) : (
-              <AlertTriangle size={13} className="text-[#E67E22]" />
-            )}
-            <span className={isToday ? 'text-[#1E8449] font-medium' : 'text-[#E67E22]'}>{v}</span>
-          </span>
-        );
-      },
-    },
-    {
       key: 'decision',
       label: 'Decision',
       render: (v) => {

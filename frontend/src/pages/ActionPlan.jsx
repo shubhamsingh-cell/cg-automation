@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import posthog from 'posthog-js';
 import {
-  ClipboardList, Sparkles, Loader2, CheckCircle, AlertTriangle,
+  ClipboardList, Sparkles, Loader2, ArrowUp, ArrowDown, Minus,
   MapPin, DollarSign, TrendingUp, Percent,
 } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
@@ -140,9 +140,9 @@ export default function ActionPlan() {
         impr_drop_pct: row.impr_drop_pct,
         trigger_reason: row.trigger_reason,
         est_lifetime_nr: v(row, 'est_lifetime_nr', 'Est_Lifetime_NR'),
-        multiplier: row.multiplier,
+        multiplier: row.multiplier_used || row.multiplier,
         mult_source: row.mult_source,
-        mult_runs: row.mult_runs,
+        mult_runs: row.mult_runs_used || row.mult_runs,
         optimal_posts_per_week: row.optimal_posts_per_week,
       });
       cacheInsight(key, insight);
@@ -188,9 +188,14 @@ export default function ActionPlan() {
     { key: 'd1_applies', label: 'D1', width: '48px', align: 'center', render: (val) => val ? <span className="text-[#1E8449]">Y</span> : <span className="text-[#555]">N</span> },
     { key: 'd1_nr', label: 'D1 NR', align: 'right', render: (val) => <span className={nrColorClass(val)}>{formatCurrency(val)}</span> },
     { key: 'est_lifetime_nr', label: 'Lifetime NR', align: 'right', render: (val, row) => { const n = v(row, 'est_lifetime_nr', 'Est_Lifetime_NR'); return <span className={`font-bold ${nrColorClass(n)}`}>{formatCurrency(n)}</span>; } },
-    { key: 'multiplier', label: 'Mult', align: 'right', render: (val) => formatMultiplier(val) },
-    { key: 'best_day', label: 'Best Day', render: (val) => { const isToday = val?.toLowerCase() === today.toLowerCase(); return (<span className="flex items-center gap-1.5">{isToday ? <CheckCircle size={13} className="text-[#1E8449]" /> : <AlertTriangle size={13} className="text-[#E67E22]" />}<span className={isToday ? 'text-[#1E8449] font-medium' : 'text-[#E67E22]'}>{val}</span></span>); } },
-    { key: '_today', label: 'Today?', width: '60px', align: 'center', sortable: false, render: (_, row) => { const isToday = row.best_day?.toLowerCase() === today.toLowerCase(); return isToday ? <span className="text-[#1E8449] font-semibold">Yes</span> : <span className="text-[#E67E22]">No</span>; } },
+    { key: 'benchmark_nr_delta_pct', label: 'vs Hist', width: '80px', align: 'center', sortable: true, render: (val, row) => {
+      if (!row.benchmark_available) return <span className="text-[#444]">--</span>;
+      const delta = val || 0;
+      if (delta > 20) return <span className="flex items-center justify-center gap-0.5 text-[#1E8449]"><ArrowUp size={12} /><span className="text-[11px] font-semibold">+{delta.toFixed(0)}%</span></span>;
+      if (delta < -20) return <span className="flex items-center justify-center gap-0.5 text-[#C0392B]"><ArrowDown size={12} /><span className="text-[11px] font-semibold">{delta.toFixed(0)}%</span></span>;
+      return <span className="flex items-center justify-center gap-0.5 text-[#888]"><Minus size={12} /><span className="text-[11px]">{delta > 0 ? '+' : ''}{delta.toFixed(0)}%</span></span>;
+    }},
+    { key: 'multiplier_used', label: 'Mult', align: 'right', render: (val) => formatMultiplier(val) },
     { key: 'optimal_posts_per_week', label: 'Posts/Wk', align: 'center', render: (val) => val ? <span className={val > 1 ? 'text-[#1E8449] font-semibold' : ''}>{val}x</span> : <span className="text-[#444]">--</span> },
     { key: '_insight', label: 'AI Insight', sortable: false, width: '260px', render: insightCell },
   ];
@@ -236,6 +241,9 @@ export default function ActionPlan() {
     { key: 'nr_gap', label: 'NR Gap', align: 'right', render: (val) => <span className="text-[#C0392B] font-semibold">{formatCurrency(val)}</span> },
   ];
 
+  const bmSummary = data?.benchmark_summary;
+  const hasBenchmarks = bmSummary && bmSummary.total_combos > 0;
+
   return (
     <div className="page-enter">
       {/* Header */}
@@ -243,6 +251,18 @@ export default function ActionPlan() {
         <ClipboardList size={22} className="text-[#5A54BD]" />
         <h2 className="text-xl font-bold text-white">Action Plan</h2>
       </div>
+
+      {/* Benchmark banner */}
+      {hasBenchmarks && (
+        <div className="glass rounded-xl px-4 py-3 mb-4 flex items-center gap-3 border border-[#5A54BD]/20">
+          <TrendingUp size={16} className="text-[#5A54BD] shrink-0" />
+          <span className="text-xs text-[#999]">
+            Historical benchmarks active: <span className="text-white font-medium">{bmSummary.total_combos}</span> combos across <span className="text-white font-medium">{bmSummary.total_locations}</span> locations
+            {' '}&middot; Avg NR: <span className="text-[#1E8449] font-medium">{formatCurrency(bmSummary.overall_avg_nr)}</span>
+            {' '}&middot; The <span className="text-[#8B86E0]">vs Hist</span> column compares current performance to historical baseline
+          </span>
+        </div>
+      )}
 
       {/* Tab Bar */}
       <div className="flex gap-1 p-1 glass rounded-xl mb-6">

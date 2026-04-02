@@ -1432,6 +1432,31 @@ def _persist_to_supabase(
             if action_plan:
                 supabase_store.save_action_plan(job_id, action_plan)
 
+            # Save benchmarks from this analysis run
+            source_df = result.get("_source_df")
+            if source_df is not None:
+                try:
+                    bm_client = (result.get("campaign_context", {}).get("client_name") or "default")
+                    benchmarks = engine.extract_benchmarks(source_df) if hasattr(source_df, "empty") else []
+                    # extract_benchmarks needs runs DataFrame, not raw df
+                    # Use _runs data if available from the result
+                except Exception:
+                    benchmarks = []
+
+                if not benchmarks:
+                    # Fallback: build benchmarks from the action plan + intelligence data
+                    try:
+                        all_runs = result.get("all_runs", [])
+                        if all_runs:
+                            runs_df = pd.DataFrame(all_runs)
+                            benchmarks = engine.extract_benchmarks(runs_df)
+                    except Exception:
+                        logger.warning("Benchmark extraction from all_runs failed", exc_info=True)
+
+                if benchmarks:
+                    supabase_store.save_benchmarks(benchmarks, client_name=bm_client)
+                    logger.info("Saved %d benchmarks for client=%s", len(benchmarks), bm_client)
+
             logger.info("Supabase persistence complete for job_id=%s", job_id)
         except Exception:
             logger.error("Supabase persistence failed for job_id=%s", job_id, exc_info=True)
@@ -1519,6 +1544,20 @@ async def api_analyse(
             status_code=500, detail=f"Analysis error: {exc}"
         ) from exc
 
+    # --- Benchmark comparison (non-blocking load, inline enrichment) ---
+    bm_client = client_name.strip() or "default"
+    try:
+        benchmark_data = supabase_store.load_benchmarks(client_name=bm_client)
+        if benchmark_data:
+            dap = result.get("daily_action_plan", [])
+            engine.compare_with_benchmarks(dap, benchmark_data)
+            bm_summary = supabase_store.get_benchmark_summary(client_name=bm_client)
+            result["benchmark_summary"] = bm_summary
+            logger.info("Benchmark comparison applied: %d benchmarks for %s",
+                        len(benchmark_data), bm_client)
+    except Exception:
+        logger.warning("Benchmark comparison skipped", exc_info=True)
+
     # Convert numpy types to native Python for JSON serialization
     result = _sanitize_for_json(result)
 
@@ -1552,6 +1591,25 @@ async def api_analyse(
     # Return JSON-safe copy (strip internal DataFrame / sell_cpa keys)
     response = {k: v for k, v in result.items() if not k.startswith("_")}
     return response
+
+
+@app.get("/api/benchmarks")
+async def api_benchmarks(client_name: str = "default") -> dict[str, Any]:
+    """Get benchmark summary and data for a client.
+
+    Args:
+        client_name: Client identifier (default: "default").
+
+    Returns:
+        Dict with summary stats and benchmark data.
+    """
+    summary = supabase_store.get_benchmark_summary(client_name=client_name)
+    benchmarks = supabase_store.load_benchmarks(client_name=client_name, limit=500)
+    return {
+        "summary": summary,
+        "benchmarks": benchmarks,
+        "client_name": client_name,
+    }
 
 
 @app.post("/api/test-slack")
