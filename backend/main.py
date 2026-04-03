@@ -38,6 +38,7 @@ from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 
 import engine
+import geocoding
 import supabase_store
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1610,65 @@ async def api_benchmarks(client_name: str = "default") -> dict[str, Any]:
         "summary": summary,
         "benchmarks": benchmarks,
         "client_name": client_name,
+    }
+
+
+@app.post("/api/geocode-locations")
+async def api_geocode_locations(job_id: str = Form("")) -> dict[str, Any]:
+    """Geocode all unique locations from a previously analysed job.
+
+    Takes a job_id (from /api/analyse response) and geocodes every unique
+    location in the daily action plan.  Returns an array of
+    {location, lat, lng, formatted_address} for map rendering.
+
+    Args:
+        job_id: The UUID of a previously completed analysis job.
+
+    Returns:
+        Dict with geocoded locations array and metadata.
+    """
+    if not geocoding.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Geocoding unavailable: GOOGLE_MAPS_API_KEY not configured",
+        )
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+
+    stored = job_store.get(job_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Extract unique locations from the action plan
+    dap: list[dict] = stored.get("daily_action_plan") or []
+    if not dap:
+        return {"job_id": job_id, "locations": [], "total": 0, "geocoded": 0}
+
+    seen: set[str] = set()
+    unique_locations: list[str] = []
+    for item in dap:
+        loc = str(item.get("Location") or "").strip()
+        loc_lower = loc.lower()
+        if loc and loc_lower not in seen:
+            seen.add(loc_lower)
+            unique_locations.append(loc)
+
+    try:
+        results = geocoding.batch_geocode(unique_locations)
+    except Exception as exc:
+        logger.error("Geocoding failed for job %s", job_id, exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Geocoding error: {exc}"
+        ) from exc
+
+    geocoded = [r for r in results if "error" not in r]
+    return {
+        "job_id": job_id,
+        "locations": results,
+        "total": len(unique_locations),
+        "geocoded": len(geocoded),
+        "failed": len(unique_locations) - len(geocoded),
     }
 
 

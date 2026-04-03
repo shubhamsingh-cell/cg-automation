@@ -645,6 +645,73 @@ def apply_best_per_location(runs: pd.DataFrame) -> tuple[pd.DataFrame, list[dict
 
 
 # ====================================================================
+# Geocoding enrichment (optional -- requires GOOGLE_MAPS_API_KEY)
+# ====================================================================
+def _enrich_with_geocoding(daily_action_plan: list[dict[str, Any]]) -> None:
+    """Add lat/lng to each action plan item if geocoding is available.
+
+    Modifies the plan list in place.  Silently skips if the geocoding
+    module is not configured or any error occurs -- geocoding is a
+    nice-to-have, never a blocker.
+    """
+    try:
+        import geocoding
+    except ImportError:
+        return
+
+    if not geocoding.is_configured():
+        logger.info("Geocoding not configured -- skipping coordinate enrichment")
+        return
+
+    # Deduplicate locations for efficiency
+    loc_set: dict[str, str] = {}  # lower -> original
+    for item in daily_action_plan:
+        loc = str(item.get("Location") or "").strip()
+        if loc:
+            loc_set.setdefault(loc.lower(), loc)
+
+    if not loc_set:
+        return
+
+    unique_locations = list(loc_set.values())
+    logger.info("Geocoding %d unique locations for action plan enrichment", len(unique_locations))
+
+    try:
+        results = geocoding.batch_geocode(unique_locations)
+    except Exception as exc:
+        logger.warning("Geocoding enrichment failed: %s", exc, exc_info=True)
+        return
+
+    # Build lookup: lower_location -> {lat, lng}
+    coord_lookup: dict[str, dict[str, float | None]] = {}
+    for geo_result in results:
+        loc_name = str(geo_result.get("location") or "").strip().lower()
+        if loc_name and "error" not in geo_result:
+            coord_lookup[loc_name] = {
+                "lat": geo_result.get("lat"),
+                "lng": geo_result.get("lng"),
+                "formatted_address": geo_result.get("formatted_address", ""),
+            }
+
+    # Enrich each action plan item
+    enriched = 0
+    for item in daily_action_plan:
+        loc = str(item.get("Location") or "").strip().lower()
+        coords = coord_lookup.get(loc)
+        if coords:
+            item["lat"] = coords["lat"]
+            item["lng"] = coords["lng"]
+            item["formatted_address"] = coords["formatted_address"]
+            enriched += 1
+        else:
+            item["lat"] = None
+            item["lng"] = None
+            item["formatted_address"] = ""
+
+    logger.info("Geocoding enrichment: %d/%d locations enriched", enriched, len(daily_action_plan))
+
+
+# ====================================================================
 # STEP 9 -- Build All Output Structures
 # ====================================================================
 def build_daily_action_plan(
@@ -824,6 +891,9 @@ def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[s
 
     # Step 9: Build outputs
     daily_action_plan = build_daily_action_plan(best_per_location, location_intelligence, freq_data)
+
+    # Step 9b: Enrich action plan with geocoded coordinates (if available)
+    _enrich_with_geocoding(daily_action_plan)
 
     scorecard = build_scorecard(runs, daily_action_plan, freq_data)
 
