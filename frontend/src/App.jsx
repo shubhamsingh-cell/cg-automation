@@ -6,6 +6,7 @@ import Upload from './pages/Upload';
 import Dashboard from './pages/Dashboard';
 import ActionPlan from './pages/ActionPlan';
 import Intelligence from './pages/Intelligence';
+import Predictor from './pages/Predictor';
 import Reports from './pages/Reports';
 import LocationDetail from './pages/LocationDetail';
 import { useAnalysis } from './context/AnalysisContext';
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/dashboard" element={hasData ? <Dashboard /> : <Navigate to="/upload" replace />} />
           <Route path="/action-plan" element={hasData ? <ActionPlan /> : <Navigate to="/upload" replace />} />
           <Route path="/intelligence" element={hasData ? <Intelligence /> : <Navigate to="/upload" replace />} />
+          <Route path="/predictor" element={hasData ? <Predictor /> : <Navigate to="/upload" replace />} />
           <Route path="/reports" element={hasData ? <Reports /> : <Navigate to="/upload" replace />} />
           <Route path="/location/:locationName" element={hasData ? <LocationDetail /> : <Navigate to="/upload" replace />} />
         </Route>

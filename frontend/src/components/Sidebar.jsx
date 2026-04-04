@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, ClipboardList, Brain, BarChart3, Upload, LogOut, ArrowLeft } from 'lucide-react';
+import { LayoutDashboard, ClipboardList, Brain, Sparkles, BarChart3, Upload, LogOut, ArrowLeft } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import { signOut } from '../utils/supabase';
 
@@ -7,6 +7,7 @@ const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/action-plan', label: 'Action Plan', icon: ClipboardList },
   { path: '/intelligence', label: 'Intelligence', icon: Brain },
+  { path: '/predictor', label: 'Predictor', icon: Sparkles },
   { path: '/reports', label: 'Reports', icon: BarChart3 },
 ];
 

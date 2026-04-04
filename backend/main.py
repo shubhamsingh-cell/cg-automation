@@ -777,6 +777,27 @@ class ScheduleRequest(BaseModel):
     webhook_url: Optional[str] = None
 
 
+class PredictRequest(BaseModel):
+    """Payload for the POST /api/predict endpoint."""
+
+    location: str
+    title: str
+    category: str
+    day_of_week: str = ""
+    job_id: str = ""  # optional: use a specific job's data
+
+
+class PredictAnalysisRequest(BaseModel):
+    """Payload for the POST /api/predict-analysis endpoint."""
+
+    location: str
+    title: str
+    category: str
+    day_of_week: str = ""
+    job_id: str = ""
+    prediction: dict[str, Any] = {}  # pass the prediction dict for LLM context
+
+
 # ---------------------------------------------------------------------------
 # Constants -- Scheduler
 # ---------------------------------------------------------------------------
@@ -2197,6 +2218,475 @@ async def api_get_sheets_url(job_id: str) -> dict[str, Any]:
         return {"status": "error", "detail": sheets_error}
 
     return {"status": "pending", "message": "Google Sheet is still being created."}
+
+
+# ===================================================================
+# POSTING PERFORMANCE PREDICTOR
+# ===================================================================
+
+_DAY_NAMES: list[str] = [
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+]
+
+
+def _normalise_key(value: str) -> str:
+    """Normalise a string for fuzzy matching against location_intelligence keys."""
+    return str(value or "").strip().lower()
+
+
+def _find_location_intel(
+    location: str,
+    loc_intel: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    """Find a location in location_intelligence with fuzzy matching.
+
+    Tries exact key match first, then substring containment.
+    Returns (matched_key, intel_dict) or ("", None).
+    """
+    loc_key = _normalise_key(location)
+    if not loc_key:
+        return "", None
+
+    # Exact key match
+    if loc_key in loc_intel:
+        return loc_key, loc_intel[loc_key]
+
+    # Substring match (e.g. "sacramento" matches "sacramento, ca")
+    for key, info in loc_intel.items():
+        if loc_key in key or key in loc_key:
+            return key, info
+        loc_name = _normalise_key(info.get("Location", ""))
+        if loc_key in loc_name or loc_name in loc_key:
+            return key, info
+
+    return "", None
+
+
+def _find_multiplier(
+    location: str,
+    multipliers: list[dict[str, Any]],
+) -> float:
+    """Look up the location multiplier from the multiplier table."""
+    loc_key = _normalise_key(location)
+    for row in multipliers:
+        row_key = _normalise_key(row.get("Location_key") or row.get("Location", ""))
+        if loc_key == row_key or loc_key in row_key or row_key in loc_key:
+            return float(row.get("Multiplier_Used", 1.0))
+    return 1.0
+
+
+def _compute_prediction(
+    location: str,
+    title: str,
+    category: str,
+    day_of_week: str,
+    analysis_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute a posting performance prediction from existing analysis data.
+
+    Uses location_intelligence, location_multipliers, and all_runs from
+    a previously completed analysis to score the hypothetical posting.
+
+    Args:
+        location: Target posting location (e.g. "Sacramento, CA").
+        title: Job title (e.g. "Warehouse Associate").
+        category: Craigslist category (e.g. "general labor").
+        day_of_week: Day to post (e.g. "Tuesday"). If empty, uses best day.
+        analysis_data: Full analysis result dict from job_store.
+
+    Returns:
+        Prediction dict with verdict, scoring factors, expected metrics.
+    """
+    loc_intel: dict[str, Any] = analysis_data.get("location_intelligence") or {}
+    multipliers: list[dict[str, Any]] = analysis_data.get("location_multipliers") or []
+    all_runs: list[dict[str, Any]] = analysis_data.get("all_runs") or []
+
+    # --- Find location data ---
+    matched_key, intel = _find_location_intel(location, loc_intel)
+    loc_multiplier = _find_multiplier(location, multipliers) if multipliers else 1.0
+
+    # --- Filter all_runs for matching records ---
+    loc_key_norm = _normalise_key(location)
+    title_key_norm = _normalise_key(title)
+    cat_key_norm = _normalise_key(category)
+
+    loc_runs = [
+        r for r in all_runs
+        if _normalise_key(r.get("Location_key") or r.get("Location", "")) == matched_key
+    ] if matched_key else []
+
+    title_loc_runs = [
+        r for r in loc_runs
+        if _normalise_key(r.get("Title_key") or r.get("Title", "")) == title_key_norm
+        or title_key_norm in _normalise_key(r.get("Title_key") or r.get("Title", ""))
+    ]
+
+    cat_loc_runs = [
+        r for r in loc_runs
+        if _normalise_key(r.get("Category_key") or r.get("Category", "")) == cat_key_norm
+        or cat_key_norm in _normalise_key(r.get("Category_key") or r.get("Category", ""))
+    ]
+
+    sample_size = len(loc_runs)
+
+    # --- Compute expected metrics from location runs ---
+    def _avg(records: list[dict], field: str, default: float = 0.0) -> float:
+        vals = [float(r.get(field, 0) or 0) for r in records if r.get(field) is not None]
+        return sum(vals) / len(vals) if vals else default
+
+    # Use title+location runs if available, else location runs, else all runs
+    metric_runs = title_loc_runs or loc_runs or all_runs
+    exp_impressions = round(_avg(metric_runs, "D1_Impressions"), 0)
+    exp_clicks = round(_avg(metric_runs, "D1_Clicks"), 1)
+    exp_applies = round(_avg(metric_runs, "D1_Applies"), 1)
+    exp_ctr = round(
+        (exp_clicks / exp_impressions * 100) if exp_impressions > 0 else 0.0, 1,
+    )
+    exp_apply_rate = round(
+        (exp_applies / exp_clicks * 100) if exp_clicks > 0 else 0.0, 1,
+    )
+    exp_nr = round(_avg(metric_runs, "Total_NR"), 2)
+    exp_profit_pct = round(_avg(metric_runs, "Profit_Pct"), 1)
+
+    # --- Best values from location intelligence ---
+    best_title = (intel.get("best_title") or "") if intel else ""
+    best_category = (intel.get("best_category") or "") if intel else ""
+    best_day = (intel.get("best_day") or "") if intel else ""
+    best_day_nr = (intel.get("best_day_avg_nr") or 0.0) if intel else 0.0
+    worst_day = (intel.get("worst_day") or "") if intel else ""
+    worst_day_nr = (intel.get("worst_day_avg_nr") or 0.0) if intel else 0.0
+
+    # If no day specified, use best day
+    posting_day = day_of_week.strip().title() if day_of_week.strip() else best_day
+
+    # --- SCORING (6 factors, max 100) ---
+
+    # 1. Location Performance (0-20): based on multiplier
+    # Multiplier range is typically 1.0-6.0+. Score linearly: 1.0=5, 3.6(avg)=12, 6.0+=20
+    loc_score = min(20, max(0, round(
+        5 + (loc_multiplier - 1.0) * (15.0 / 5.0),
+    )))
+    if not matched_key:
+        loc_score = 0  # no data for this location
+
+    # 2. Title Competitiveness (0-15): based on title avg NR in location
+    title_avg_nr = _avg(title_loc_runs, "Total_NR") if title_loc_runs else 0.0
+    best_title_nr = (intel.get("best_title_avg_nr") or 0.01) if intel else 0.01
+    if best_title_nr > 0 and title_loc_runs:
+        title_ratio = title_avg_nr / best_title_nr
+        title_score = min(15, max(0, round(title_ratio * 15)))
+    elif title_loc_runs:
+        title_score = 8  # have data but can't compare
+    else:
+        title_score = 0  # no data for this title in location
+
+    # 3. Category Match (0-15): based on category performance in location
+    cat_avg_nr = _avg(cat_loc_runs, "Total_NR") if cat_loc_runs else 0.0
+    best_cat_nr = (intel.get("best_category_avg_nr") or 0.01) if intel else 0.01
+    if best_cat_nr > 0 and cat_loc_runs:
+        cat_ratio = cat_avg_nr / best_cat_nr
+        cat_score = min(15, max(0, round(cat_ratio * 15)))
+    elif cat_loc_runs:
+        cat_score = 8
+    else:
+        cat_score = 0
+
+    # 4. Day Timing (0-15): best day = 15, worst day = 3, others interpolate
+    if best_day and posting_day:
+        if _normalise_key(posting_day) == _normalise_key(best_day):
+            day_score = 15
+        elif _normalise_key(posting_day) == _normalise_key(worst_day):
+            day_score = 3
+        else:
+            # Look up from day_table if available
+            day_table = (intel.get("day_table") or []) if intel else []
+            day_nr = None
+            for d in day_table:
+                if _normalise_key(d.get("DayOfWeek_Posted", "")) == _normalise_key(posting_day):
+                    day_nr = d.get("Avg_Total_NR", 0)
+                    break
+            if day_nr is not None and best_day_nr > 0:
+                day_ratio = max(0.0, day_nr / best_day_nr) if best_day_nr != 0 else 0.5
+                day_score = min(15, max(3, round(3 + day_ratio * 12)))
+            else:
+                day_score = 9  # middle-of-road default
+    else:
+        day_score = 7  # no day data
+
+    # 5. Historical Profit (0-20): based on avg profit_pct for location
+    loc_avg_profit = _avg(loc_runs, "Profit_Pct") if loc_runs else 0.0
+    if loc_runs:
+        # Profit_Pct range: -100% to 500%+. Map: <0=0, 0=5, 100=12, 300+=20
+        profit_score = min(20, max(0, round(
+            5 + loc_avg_profit * (15.0 / 300.0),
+        )))
+    else:
+        profit_score = 0
+
+    # 6. Market Demand (0-15): based on total runs in this location
+    if sample_size >= 50:
+        demand_score = 15
+    elif sample_size >= 20:
+        demand_score = 12
+    elif sample_size >= 10:
+        demand_score = 9
+    elif sample_size >= 5:
+        demand_score = 6
+    elif sample_size >= 1:
+        demand_score = 3
+    else:
+        demand_score = 0
+
+    total_score = loc_score + title_score + cat_score + day_score + profit_score + demand_score
+
+    # --- Verdict ---
+    if total_score >= 70:
+        verdict = "POST"
+        verdict_reason = (
+            f"Strong historical performance in {location}. "
+            f"Score {total_score}/100 indicates high probability of positive ROI."
+        )
+    elif total_score >= 45:
+        verdict = "OPTIMIZE"
+        weak_factors = []
+        if title_score < 8:
+            weak_factors.append(f"consider using '{best_title}' instead of '{title}'")
+        if cat_score < 8:
+            weak_factors.append(f"try category '{best_category}'")
+        if day_score < 10:
+            weak_factors.append(f"post on {best_day} for best results")
+        reason_suffix = "; ".join(weak_factors) if weak_factors else "review posting parameters"
+        verdict_reason = (
+            f"Moderate potential (score {total_score}/100). To improve: {reason_suffix}."
+        )
+    else:
+        verdict = "SKIP"
+        verdict_reason = (
+            f"Low predicted performance (score {total_score}/100). "
+            f"Insufficient data or poor historical results for this combination."
+        )
+
+    # --- Confidence ---
+    if sample_size >= 20 and title_loc_runs:
+        confidence = "high"
+    elif sample_size >= 5:
+        confidence = "medium"
+    elif sample_size >= 1:
+        confidence = "low"
+    else:
+        confidence = "no_data"
+
+    return {
+        "location": location,
+        "title": title,
+        "category": category,
+        "day_of_week": posting_day,
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "expected_impressions": int(exp_impressions),
+        "expected_clicks": round(exp_clicks, 1),
+        "expected_applies": round(exp_applies, 1),
+        "expected_ctr": exp_ctr,
+        "expected_apply_rate": exp_apply_rate,
+        "expected_nr": exp_nr,
+        "expected_profit_pct": exp_profit_pct,
+        "location_multiplier": round(loc_multiplier, 2),
+        "best_title_for_location": best_title,
+        "best_category_for_location": best_category,
+        "best_day_for_location": best_day,
+        "confidence": confidence,
+        "sample_size": sample_size,
+        "scoring": {
+            "total": total_score,
+            "factors": [
+                {"name": "Location Performance", "value": loc_score, "max": 20},
+                {"name": "Title Competitiveness", "value": title_score, "max": 15},
+                {"name": "Category Match", "value": cat_score, "max": 15},
+                {"name": "Day Timing", "value": day_score, "max": 15},
+                {"name": "Historical Profit", "value": profit_score, "max": 20},
+                {"name": "Market Demand", "value": demand_score, "max": 15},
+            ],
+        },
+    }
+
+
+def _get_latest_analysis_data(job_id: str = "") -> dict[str, Any] | None:
+    """Retrieve the latest analysis data from job_store or Supabase.
+
+    If job_id is provided, fetches that specific job. Otherwise returns
+    the most recently stored analysis.
+
+    Args:
+        job_id: Optional UUID of a specific analysis job.
+
+    Returns:
+        Analysis result dict, or None if no data is available.
+    """
+    if job_id:
+        stored = job_store.get(job_id)
+        if stored:
+            return stored
+        # Try Supabase
+        try:
+            sb_job = supabase_store.get_job(job_id)
+            if sb_job:
+                return sb_job
+        except Exception:
+            logger.debug("Supabase lookup failed for job_id=%s", job_id, exc_info=True)
+        return None
+
+    # No job_id: return the most recent analysis in job_store
+    if job_store:
+        # LRUDict: last item is most recent
+        last_key = list(job_store.keys())[-1]
+        return job_store[last_key]
+
+    # Try Supabase for latest upload data
+    try:
+        row = supabase_store.get_latest_upload_data()
+        if row and row.get("analysis_data"):
+            return row["analysis_data"]
+    except Exception:
+        logger.debug("Supabase latest upload lookup failed", exc_info=True)
+
+    return None
+
+
+@app.post("/api/predict")
+async def api_predict(req: PredictRequest) -> dict[str, Any]:
+    """Predict performance for a hypothetical Craigslist posting.
+
+    Uses historical analysis data to score and predict outcomes for a
+    given location/title/category/day combination. Returns verdict
+    (POST/OPTIMIZE/SKIP), expected metrics, and a 6-factor scoring breakdown.
+
+    Args:
+        req: PredictRequest with location, title, category, and optional day_of_week.
+
+    Returns:
+        Dict with ok flag, prediction object, and computation time in ms.
+    """
+    t0 = time.monotonic()
+
+    if not req.location.strip():
+        raise HTTPException(status_code=400, detail="location is required")
+    if not req.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    if not req.category.strip():
+        raise HTTPException(status_code=400, detail="category is required")
+
+    # Validate day_of_week if provided
+    if req.day_of_week.strip():
+        normalised_day = req.day_of_week.strip().title()
+        if normalised_day not in _DAY_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid day_of_week '{req.day_of_week}'. Must be one of: {', '.join(_DAY_NAMES)}",
+            )
+
+    analysis_data = _get_latest_analysis_data(req.job_id)
+    if analysis_data is None:
+        return {
+            "ok": False,
+            "error": "no_data",
+            "message": "No analysis data available. Upload campaign data first.",
+            "computation_ms": round((time.monotonic() - t0) * 1000, 1),
+        }
+
+    prediction = _compute_prediction(
+        location=req.location.strip(),
+        title=req.title.strip(),
+        category=req.category.strip(),
+        day_of_week=req.day_of_week.strip(),
+        analysis_data=analysis_data,
+    )
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+
+    return {
+        "ok": True,
+        "prediction": prediction,
+        "computation_ms": elapsed_ms,
+    }
+
+
+@app.post("/api/predict-analysis")
+async def api_predict_analysis(req: PredictAnalysisRequest) -> dict[str, Any]:
+    """Generate an LLM-powered strategic recommendation for a prediction.
+
+    Takes the prediction data (from /api/predict) and sends it to the
+    LLM router to produce a 2-3 sentence strategic recommendation.
+
+    Args:
+        req: PredictAnalysisRequest with posting parameters and prediction dict.
+
+    Returns:
+        Dict with ok flag and the LLM-generated analysis text.
+    """
+    t0 = time.monotonic()
+
+    # If prediction not provided, compute it first
+    prediction = req.prediction
+    if not prediction:
+        analysis_data = _get_latest_analysis_data(req.job_id)
+        if analysis_data is None:
+            return {
+                "ok": False,
+                "error": "no_data",
+                "message": "No analysis data available. Upload campaign data first.",
+            }
+        prediction = _compute_prediction(
+            location=req.location.strip(),
+            title=req.title.strip(),
+            category=req.category.strip(),
+            day_of_week=req.day_of_week.strip(),
+            analysis_data=analysis_data,
+        )
+
+    system_prompt = (
+        "You are a Craigslist ad campaign performance analyst. "
+        "Given prediction data for a hypothetical posting, provide a 2-3 sentence "
+        "strategic recommendation. Be specific and actionable. Reference the "
+        "scoring factors and expected metrics. If the verdict is OPTIMIZE or SKIP, "
+        "explain exactly what to change."
+    )
+
+    user_prompt = (
+        f"Prediction for posting in {req.location}, title '{req.title}', "
+        f"category '{req.category}', day '{req.day_of_week or prediction.get('day_of_week', 'N/A')}':\n\n"
+        f"Verdict: {prediction.get('verdict', 'N/A')} (Score: {prediction.get('scoring', {}).get('total', 0)}/100)\n"
+        f"Reason: {prediction.get('verdict_reason', '')}\n"
+        f"Expected: {prediction.get('expected_impressions', 0)} impressions, "
+        f"{prediction.get('expected_clicks', 0)} clicks, "
+        f"{prediction.get('expected_applies', 0)} applies, "
+        f"NR ${prediction.get('expected_nr', 0):.2f}\n"
+        f"Location multiplier: {prediction.get('location_multiplier', 1.0)}\n"
+        f"Best title for location: {prediction.get('best_title_for_location', 'N/A')}\n"
+        f"Best category for location: {prediction.get('best_category_for_location', 'N/A')}\n"
+        f"Best day for location: {prediction.get('best_day_for_location', 'N/A')}\n"
+        f"Confidence: {prediction.get('confidence', 'N/A')} (sample size: {prediction.get('sample_size', 0)})\n"
+        f"Scoring breakdown: {json.dumps(prediction.get('scoring', {}).get('factors', []))}\n\n"
+        f"Provide a 2-3 sentence strategic recommendation."
+    )
+
+    try:
+        from llm_router import generate_insight
+
+        analysis_text = generate_insight(system_prompt, user_prompt)
+    except Exception as exc:
+        logger.error("Predict analysis LLM call failed", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"LLM analysis failed: {exc}",
+        ) from exc
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+
+    return {
+        "ok": True,
+        "analysis": analysis_text,
+        "prediction": prediction,
+        "computation_ms": elapsed_ms,
+    }
 
 
 # ---------------------------------------------------------------------------
