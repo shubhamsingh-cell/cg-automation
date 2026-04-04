@@ -236,36 +236,51 @@ export default function Upload() {
             </div>
           )}
 
-          {/* ---- Step Indicator ---- */}
-          <div className="flex items-center justify-center mb-10" role="navigation" aria-label="Wizard progress">
-            {[1, 2, 3, 4].map((s) => (
-              <div key={s} className="flex items-center">
-                <div className="flex flex-col items-center gap-2">
-                  <div
-                    className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300 ${
-                      step === s
-                        ? 'bg-[#5A54BD] text-white shadow-lg shadow-[#5A54BD]/30 ring-4 ring-[#5A54BD]/15'
-                        : step > s
-                        ? 'bg-[#1E8449] text-white'
-                        : 'bg-[#1a1a2a] text-[#555] border border-[#2a2a3a]'
+          {/* ---- Step Indicator (Premium Progress Bar) ---- */}
+          <div className="mb-12" role="navigation" aria-label="Wizard progress">
+            {/* Step labels */}
+            <div className="flex items-center justify-between mb-3 px-1">
+              {STEP_LABELS.map((label, i) => {
+                const s = i + 1;
+                return (
+                  <span
+                    key={s}
+                    className={`text-[11px] font-semibold tracking-wide transition-colors duration-300 ${
+                      step === s ? 'text-[#48c78e]' : step > s ? 'text-[#48c78e]/60' : 'text-[#444]'
                     }`}
                     aria-current={step === s ? 'step' : undefined}
                   >
-                    {step > s ? '\u2713' : s}
-                  </div>
-                  <span className={`text-[10px] font-semibold tracking-wide ${step === s ? 'text-[#8B86E0]' : step > s ? 'text-[#1E8449]' : 'text-[#444]'}`}>
-                    {STEP_LABELS[s - 1]}
+                    {label}
                   </span>
-                </div>
-                {s < 4 && (
-                  <div className={`w-16 h-[2px] mx-2 mb-5 rounded-full transition-colors duration-300 ${step > s ? 'bg-[#1E8449]' : 'bg-[#1a1a2a]'}`} />
-                )}
-              </div>
-            ))}
+                );
+              })}
+            </div>
+            {/* Progress track */}
+            <div className="relative h-1.5 rounded-full bg-[#1a1a2a] overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out"
+                style={{
+                  width: `${((step - 1) / 3) * 100}%`,
+                  background: 'linear-gradient(90deg, #48c78e, #6dd5a8)',
+                  boxShadow: '0 0 12px rgba(72, 199, 142, 0.4), 0 0 4px rgba(72, 199, 142, 0.6)',
+                }}
+              />
+              {/* Glowing dot at current position */}
+              <div
+                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full transition-all duration-500 ease-out"
+                style={{
+                  left: `calc(${((step - 1) / 3) * 100}% - 6px)`,
+                  background: '#48c78e',
+                  boxShadow: '0 0 8px rgba(72, 199, 142, 0.6), 0 0 20px rgba(72, 199, 142, 0.3)',
+                }}
+              />
+            </div>
+            {/* Step counter */}
+            <p className="text-[10px] text-[#555] mt-2 text-center">Step {step} of 4</p>
           </div>
 
           {/* ---- Wizard Card Wrapper ---- */}
-          <div className="gradient-border glass-strong rounded-2xl p-8">
+          <div className="premium-card glass-strong rounded-2xl p-10">
 
             {/* ================================================================ */}
             {/* STEP 1 -- Campaign Data Upload                                   */}
@@ -274,11 +289,11 @@ export default function Upload() {
               <div className="page-enter">
                 {/* Hero */}
                 <div className="text-center mb-10">
-                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#5A54BD] to-[#6BB3CD] mb-6 shadow-lg shadow-[#5A54BD]/25 header-icon">
-                    <UploadIcon size={26} className="text-white" />
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#48c78e] to-[#6dd5a8] mb-6 shadow-lg shadow-[#48c78e]/25 header-icon">
+                    <UploadIcon size={28} className="text-white" />
                   </div>
-                  <h1 className="text-3xl font-bold text-white tracking-tight">CG Automation</h1>
-                  <p className="text-[#666] mt-2.5 text-sm leading-relaxed max-w-md mx-auto">
+                  <h1 className="text-3xl font-bold tracking-tight" style={{ background: 'linear-gradient(135deg, #48c78e, #6dd5a8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>CG Automation</h1>
+                  <p className="text-[#666] mt-3 text-sm leading-relaxed max-w-md mx-auto">
                     Upload your Craigslist campaign data to get location-specific posting recommendations
                   </p>
                   {/* Nova AI Suite badge */}
@@ -337,14 +352,14 @@ export default function Upload() {
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-4">
-                      <div className="w-14 h-14 rounded-2xl bg-[#5A54BD]/10 flex items-center justify-center upload-icon-pulse">
-                        <UploadIcon size={26} className="text-[#5A54BD]" />
+                      <div className="w-16 h-16 rounded-2xl bg-[#48c78e]/10 flex items-center justify-center upload-icon-pulse">
+                        <UploadIcon size={30} className="text-[#48c78e]" />
                       </div>
                       <div>
-                        <p className="text-white font-medium text-base">Drop your file here</p>
-                        <p className="text-[#555] text-sm mt-1.5">or click to browse</p>
+                        <p className="text-white font-semibold text-lg">Drop your file here</p>
+                        <p className="text-[#666] text-sm mt-2">or click to browse</p>
                       </div>
-                      <p className="text-[#333] text-xs mt-1">Accepts .xlsx, .xls, and .csv files</p>
+                      <p className="text-[#444] text-xs mt-1">Accepts .xlsx, .xls, and .csv files</p>
                     </div>
                   )}
                 </div>
@@ -493,19 +508,19 @@ export default function Upload() {
                             onClick={() => setJobCategory(selected ? '' : id)}
                             className={`relative flex flex-col items-center gap-2 py-4 px-2 rounded-xl border transition-all duration-200 text-center ${
                               selected
-                                ? 'border-[#5A54BD] bg-[#5A54BD]/10 shadow-[0_0_12px_rgba(90,84,189,0.15)]'
-                                : 'border-[rgba(90,84,189,0.1)] bg-[#0a0a0a]/40 hover:border-[rgba(90,84,189,0.25)] hover:bg-[#0a0a0a]/60'
+                                ? 'border-[#48c78e] bg-[#48c78e]/8 shadow-[0_0_16px_rgba(72,199,142,0.2),0_0_4px_rgba(72,199,142,0.1)]'
+                                : 'border-[rgba(90,84,189,0.1)] bg-[#0a0a0a]/40 hover:border-[rgba(72,199,142,0.3)] hover:bg-[#0a0a0a]/60'
                             }`}
                             aria-pressed={selected}
                             aria-label={label}
                           >
                             {selected && (
                               <div className="absolute top-1.5 right-1.5">
-                                <CheckCircle2 size={12} className="text-[#5A54BD]" />
+                                <CheckCircle2 size={12} className="text-[#48c78e]" />
                               </div>
                             )}
-                            <Icon size={20} className={selected ? 'text-[#8B86E0]' : 'text-[#555]'} />
-                            <span className={`text-xs font-medium ${selected ? 'text-[#8B86E0]' : 'text-[#888]'}`}>{label}</span>
+                            <Icon size={20} className={selected ? 'text-[#48c78e]' : 'text-[#555]'} />
+                            <span className={`text-xs font-medium ${selected ? 'text-[#48c78e]' : 'text-[#888]'}`}>{label}</span>
                           </button>
                         );
                       })}
@@ -699,9 +714,13 @@ export default function Upload() {
                 {/* Processing timeline */}
                 {uploading && (
                   <div>
-                    <div className="flex items-center gap-3 mb-6">
-                      <Loader2 size={18} className="text-[#5A54BD] animate-spin" />
+                    <div className="flex items-center gap-3 mb-4">
+                      <Loader2 size={18} className="text-[#48c78e] animate-spin" />
                       <h3 className="text-base font-semibold text-white">Processing your data</h3>
+                    </div>
+                    {/* Pulsing progress bar */}
+                    <div className="h-1 rounded-full bg-[#1a1a2a] overflow-hidden mb-6">
+                      <div className="h-full rounded-full processing-bar" style={{ background: 'linear-gradient(90deg, #48c78e, #6dd5a8, #48c78e)', backgroundSize: '200% 100%' }} />
                     </div>
                     <div className="relative ml-2">
                       <div className="absolute left-[9px] top-2 bottom-2 w-px bg-[#1a1a2e]" aria-hidden="true" />
