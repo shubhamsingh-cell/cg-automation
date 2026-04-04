@@ -18,6 +18,8 @@ import {
   DollarSign,
   Sparkles,
   AlertCircle,
+  Trash2,
+  Database,
 } from 'lucide-react';
 import { uploadFile } from '../utils/api';
 import { useAnalysis } from '../context/AnalysisContext';
@@ -55,7 +57,8 @@ const STEP_LABELS = ['Upload', 'Pricing', 'Context', 'Analyse'];
 
 export default function Upload() {
   const navigate = useNavigate();
-  const { loadAnalysis } = useAnalysis();
+  const { data: existingData, loadAnalysis, clearData, uploadMeta } = useAnalysis();
+  const [clearing, setClearing] = useState(false);
   const fileInputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -135,7 +138,11 @@ export default function Upload() {
       const data = await uploadFile(file, undefined, cpaValue, campaignContext);
       clearInterval(stepInterval);
       setCurrentProcessingStep(PROCESSING_STEPS.length - 1);
-      loadAnalysis(data);
+      loadAnalysis(data, {
+        filename: file.name,
+        created_at: new Date().toISOString(),
+        client_name: clientName,
+      });
 
       const sessionId = `cg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       posthog.identify(sessionId);
@@ -187,6 +194,47 @@ export default function Upload() {
       {/* ---- Main Content (offset for fixed header) ---- */}
       <div className="flex-1 flex items-center justify-center p-6 pt-20">
         <div className="w-full max-w-[640px] relative z-10 page-enter">
+
+          {/* ---- Persisted Data Banner ---- */}
+          {existingData && uploadMeta && (
+            <div className="mb-6 rounded-xl bg-[#1E8449]/8 border border-[#1E8449]/20 p-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <Database size={18} className="text-[#1E8449] shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm text-white font-medium truncate">
+                    Data loaded: {uploadMeta.filename || 'Previous upload'}
+                    {uploadMeta.client_name ? ` (${uploadMeta.client_name})` : ''}
+                  </p>
+                  <p className="text-[10px] text-[#1E8449]/70 mt-0.5">
+                    Last uploaded: {uploadMeta.created_at
+                      ? new Date(uploadMeta.created_at).toLocaleString()
+                      : 'Unknown'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => navigate('/dashboard')}
+                  className="px-3 py-1.5 rounded-lg bg-[#1E8449]/15 text-[#1E8449] text-xs font-semibold hover:bg-[#1E8449]/25 transition-colors"
+                >
+                  View Dashboard
+                </button>
+                <button
+                  onClick={async () => {
+                    setClearing(true);
+                    await clearData();
+                    setClearing(false);
+                  }}
+                  disabled={clearing}
+                  className="px-3 py-1.5 rounded-lg bg-[#C0392B]/10 text-[#E74C3C] text-xs font-semibold hover:bg-[#C0392B]/20 transition-colors flex items-center gap-1.5"
+                  title="Clear persisted data"
+                >
+                  {clearing ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ---- Step Indicator ---- */}
           <div className="flex items-center justify-center mb-10" role="navigation" aria-label="Wizard progress">

@@ -38,4 +38,14 @@ export function getDownloadUrl(jobId) {
   return `${API_URL}/api/download/${jobId}`;
 }
 
+export async function fetchLatestUpload() {
+  const response = await api.get('/api/uploads/latest');
+  return response.data;
+}
+
+export async function clearUploadData() {
+  const response = await api.delete('/api/uploads');
+  return response.data;
+}
+
 export default api;

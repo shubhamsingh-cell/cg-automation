@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { fetchLatestUpload, clearUploadData } from '../utils/api';
 
 const AnalysisContext = createContext(null);
 
@@ -37,26 +38,68 @@ export function AnalysisProvider({ children }) {
   const [data, setData] = useState(null);
   const [jobId, setJobId] = useState(null);
   const [insightsCache, setInsightsCache] = useState({});
+  const [uploadMeta, setUploadMeta] = useState(null); // {filename, created_at, client_name}
+  const [restoring, setRestoring] = useState(true);
 
-  const loadAnalysis = useCallback((analysisData) => {
+  const loadAnalysis = useCallback((analysisData, meta) => {
     const normalized = normalizeObj(analysisData);
     setData(normalized);
     setJobId(analysisData.job_id);
     setInsightsCache({});
+    if (meta) {
+      setUploadMeta(meta);
+    }
   }, []);
 
   const cacheInsight = useCallback((key, insight) => {
     setInsightsCache((prev) => ({ ...prev, [key]: insight }));
   }, []);
 
-  const clearData = useCallback(() => {
+  const clearData = useCallback(async () => {
     setData(null);
     setJobId(null);
     setInsightsCache({});
+    setUploadMeta(null);
+    try {
+      await clearUploadData();
+    } catch (err) {
+      // Best-effort clear from server; local state is already cleared
+      console.warn('Failed to clear server upload data:', err);
+    }
+  }, []);
+
+  // On mount: check Supabase for persisted upload data
+  useEffect(() => {
+    let cancelled = false;
+    async function restore() {
+      try {
+        const result = await fetchLatestUpload();
+        if (!cancelled && result && result.found && result.analysis_data) {
+          const normalized = normalizeObj(result.analysis_data);
+          setData(normalized);
+          setJobId(result.job_id || result.analysis_data.job_id);
+          setUploadMeta({
+            filename: result.filename || '',
+            created_at: result.created_at || '',
+            client_name: result.client_name || '',
+          });
+        }
+      } catch (err) {
+        // Silently fail -- user can always re-upload
+        console.warn('Failed to restore persisted upload:', err);
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
+    }
+    restore();
+    return () => { cancelled = true; };
   }, []);
 
   return (
-    <AnalysisContext.Provider value={{ data, jobId, insightsCache, loadAnalysis, cacheInsight, clearData }}>
+    <AnalysisContext.Provider value={{
+      data, jobId, insightsCache, uploadMeta, restoring,
+      loadAnalysis, cacheInsight, clearData,
+    }}>
       {children}
     </AnalysisContext.Provider>
   );

@@ -1591,6 +1591,22 @@ async def api_analyse(
 
     # Return JSON-safe copy (strip internal DataFrame / sell_cpa keys)
     response = {k: v for k, v in result.items() if not k.startswith("_")}
+
+    # Fire-and-forget: persist full analysis to cg_uploads for page-refresh survival
+    def _persist_upload() -> None:
+        try:
+            supabase_store.save_upload_data(
+                job_id=job_id,
+                filename=file.filename or "",
+                sell_cpa=sell_cpa,
+                client_name=client_name.strip(),
+                analysis_data=response,
+            )
+        except Exception:
+            logger.error("Failed to persist upload data for job_id=%s", job_id, exc_info=True)
+
+    threading.Thread(target=_persist_upload, daemon=True).start()
+
     return response
 
 
@@ -1611,6 +1627,54 @@ async def api_benchmarks(client_name: str = "default") -> dict[str, Any]:
         "benchmarks": benchmarks,
         "client_name": client_name,
     }
+
+
+@app.get("/api/uploads/latest")
+async def api_get_latest_upload() -> dict[str, Any]:
+    """Return the most recent uploaded analysis from cg_uploads.
+
+    Used by the frontend to auto-load data on page refresh so users
+    do not need to re-upload their file.
+
+    Returns:
+        Dict with analysis_data, filename, created_at, job_id.
+        Returns {found: false} if no upload exists.
+    """
+    try:
+        row = supabase_store.get_latest_upload_data()
+    except Exception:
+        logger.error("Failed to fetch latest upload", exc_info=True)
+        row = None
+
+    if not row:
+        return {"found": False}
+
+    return {
+        "found": True,
+        "job_id": row.get("job_id", ""),
+        "filename": row.get("filename", ""),
+        "client_name": row.get("client_name", ""),
+        "sell_cpa": row.get("sell_cpa"),
+        "created_at": row.get("created_at", ""),
+        "analysis_data": row.get("analysis_data", {}),
+    }
+
+
+@app.delete("/api/uploads")
+async def api_clear_uploads() -> dict[str, Any]:
+    """Clear all persisted upload data from cg_uploads.
+
+    Used by the 'Clear Data' button in the frontend.
+
+    Returns:
+        Dict with success boolean.
+    """
+    try:
+        ok = supabase_store.clear_all_upload_data()
+        return {"success": ok}
+    except Exception:
+        logger.error("Failed to clear upload data", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to clear data")
 
 
 @app.post("/api/geocode-locations")

@@ -703,3 +703,127 @@ def list_active_schedules() -> list[dict[str, Any]]:
     if result and isinstance(result, list):
         return result
     return []
+
+
+# ---------------------------------------------------------------------------
+# cg_uploads -- Persist full analysis result for page-refresh survival
+# ---------------------------------------------------------------------------
+#
+# -- SQL to create the table (run once in Supabase SQL editor):
+#
+# CREATE TABLE IF NOT EXISTS cg_uploads (
+#     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+#     job_id TEXT UNIQUE NOT NULL,
+#     filename TEXT DEFAULT '',
+#     sell_cpa NUMERIC DEFAULT 1.20,
+#     client_name TEXT DEFAULT '',
+#     analysis_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+#     created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+#
+# ALTER TABLE cg_uploads ENABLE ROW LEVEL SECURITY;
+# CREATE POLICY "Service role full access" ON cg_uploads FOR ALL
+#   USING (auth.role() = 'service_role');
+
+
+def save_upload_data(
+    job_id: str,
+    filename: str,
+    sell_cpa: float,
+    client_name: str,
+    analysis_data: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Persist the full analysis JSON to cg_uploads for page-refresh survival.
+
+    Args:
+        job_id: UUID of the analysis job.
+        filename: Original uploaded filename.
+        sell_cpa: Revenue per apply used.
+        client_name: Client name for multi-tenant support.
+        analysis_data: The full analysis result dict (JSON-safe, no DataFrames).
+
+    Returns:
+        Inserted row dict, or None on failure.
+    """
+    if not _configured():
+        return None
+
+    row: dict[str, Any] = {
+        "job_id": job_id,
+        "filename": filename or "",
+        "sell_cpa": sell_cpa,
+        "client_name": client_name or "",
+        "analysis_data": analysis_data,
+    }
+
+    result = _supabase_request("POST", "cg_uploads", body=row)
+    if result and isinstance(result, list) and len(result) > 0:
+        logger.info("Upload data persisted for job_id=%s", job_id)
+        return result[0]
+    return result
+
+
+def get_latest_upload_data(
+    client_name: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Retrieve the most recent upload record from cg_uploads.
+
+    Args:
+        client_name: Optional client filter. If None, returns the global latest.
+
+    Returns:
+        Dict with keys: job_id, filename, sell_cpa, client_name,
+        analysis_data, created_at. Or None if nothing found.
+    """
+    if not _configured():
+        return None
+
+    params: dict[str, str] = {
+        "select": "*",
+        "order": "created_at.desc",
+        "limit": "1",
+    }
+    if client_name:
+        params["client_name"] = f"eq.{client_name}"
+
+    result = _supabase_request("GET", "cg_uploads", params=params)
+    if result and isinstance(result, list) and len(result) > 0:
+        return result[0]
+    return None
+
+
+def delete_upload_data(job_id: str) -> bool:
+    """Delete an upload record from cg_uploads.
+
+    Args:
+        job_id: The job's unique identifier.
+
+    Returns:
+        True if the request succeeded, False otherwise.
+    """
+    if not _configured():
+        return False
+
+    result = _supabase_request(
+        "DELETE", "cg_uploads",
+        params={"job_id": f"eq.{job_id}"},
+    )
+    return result is not None or result == []
+
+
+def clear_all_upload_data() -> bool:
+    """Delete ALL upload records from cg_uploads (clear data action).
+
+    Returns:
+        True if the request succeeded, False otherwise.
+    """
+    if not _configured():
+        return False
+
+    # Supabase REST requires a filter; use neq empty string to match all rows
+    result = _supabase_request(
+        "DELETE", "cg_uploads",
+        params={"job_id": "neq."},
+    )
+    logger.info("Cleared all upload data from cg_uploads")
+    return result is not None or result == []

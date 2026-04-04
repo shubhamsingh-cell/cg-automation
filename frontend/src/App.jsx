@@ -11,9 +11,18 @@ import LocationDetail from './pages/LocationDetail';
 import { useAnalysis } from './context/AnalysisContext';
 
 export default function App() {
-  const { data } = useAnalysis();
+  const { data, restoring } = useAnalysis();
   const hasData = !!data;
   const [user, setUser] = useState(null);
+
+  // While restoring persisted data from server, show a brief loading state
+  if (restoring) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="text-[#555] text-sm">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <AuthGate onUser={setUser}>
