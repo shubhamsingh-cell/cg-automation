@@ -28,9 +28,9 @@ export default function NovaChatWidget() {
               <X size={16} />
             </button>
           </div>
-          {/* Iframe */}
+          {/* Iframe -- load Nova chatbot */}
           <iframe
-            src="https://media-plan-generator.onrender.com/nova?embed=true"
+            src="https://media-plan-generator.onrender.com/nova"
             title="Nova AI Chat"
             className="w-full border-0 bg-[#0a0a0a]"
             style={{ height: 'calc(100% - 44px)' }}

@@ -29,9 +29,9 @@ export default function App() {
   return (
     <AuthGate onUser={setUser}>
       <Routes>
-        <Route path="/upload" element={<Upload />} />
         <Route element={<Layout user={user} />}>
           <Route path="/" element={hasData ? <Navigate to="/dashboard" replace /> : <Navigate to="/upload" replace />} />
+          <Route path="/upload" element={<Upload />} />
           <Route path="/dashboard" element={hasData ? <Dashboard /> : <Navigate to="/upload" replace />} />
           <Route path="/action-plan" element={hasData ? <ActionPlan /> : <Navigate to="/upload" replace />} />
           <Route path="/intelligence" element={hasData ? <Intelligence /> : <Navigate to="/upload" replace />} />
