@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageCircle, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 export default function NovaChatWidget() {
   const [open, setOpen] = useState(false);
@@ -15,8 +15,8 @@ export default function NovaChatWidget() {
           {/* Glass header bar */}
           <div className="h-11 flex items-center justify-between px-4 bg-[#0a0b14]/90 backdrop-blur-xl border-b border-[rgba(90,84,189,0.2)]">
             <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[#5A54BD] to-[#6BB3CD] flex items-center justify-center">
-                <span className="text-white text-[8px] font-bold">N</span>
+              <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #5A54BD, #6BB3CD)' }}>
+                <span className="text-white text-[9px] font-bold">N</span>
               </div>
               <span className="text-white text-xs font-semibold tracking-tight">Nova AI</span>
             </div>
@@ -39,7 +39,7 @@ export default function NovaChatWidget() {
         </div>
       )}
 
-      {/* Floating Button */}
+      {/* Floating Button -- Nova branded gradient circle with "N" */}
       <button
         onClick={() => setOpen((prev) => !prev)}
         className="fixed bottom-5 right-5 z-[9999] w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 hover:scale-105 hover:shadow-xl active:scale-95 focus-visible:outline-2 focus-visible:outline-[#5A54BD] focus-visible:outline-offset-2"
@@ -54,7 +54,7 @@ export default function NovaChatWidget() {
         {open ? (
           <X size={22} className="text-white" />
         ) : (
-          <MessageCircle size={22} className="text-white" />
+          <span className="text-white text-lg font-bold">N</span>
         )}
       </button>
     </>
