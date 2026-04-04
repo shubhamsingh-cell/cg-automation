@@ -158,7 +158,7 @@ export default function Upload() {
   // RENDER
   // ============================================================
   return (
-    <div className="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full py-8">
+    <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full px-6 py-12">
 
       {/* ---- Persisted Data Banner ---- */}
       {existingData && uploadMeta && (
