@@ -18,7 +18,7 @@ export default function TitleAnalysis() {
       : Object.values(data.location_intelligence);
 
     intel.forEach((loc) => {
-      loc.title_rankings?.forEach((t) => {
+      loc.title_table?.forEach((t) => {
         if (!titleMap[t.title]) {
           titleMap[t.title] = { title: t.title, total_nr: 0, total_profit: 0, total_runs: 0, locations: 0 };
         }
@@ -50,7 +50,7 @@ export default function TitleAnalysis() {
       ? data.location_intelligence
       : Object.values(data.location_intelligence);
     const loc = intel.find((l) => l.location === selectedLocation);
-    return loc?.title_rankings || [];
+    return loc?.title_table || [];
   }, [data, selectedLocation]);
 
   const globalColumns = [

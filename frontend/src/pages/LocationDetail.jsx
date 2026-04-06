@@ -113,13 +113,13 @@ export default function LocationDetail() {
         <SummaryItem
           label="Recommended Title"
           value={locIntel?.best_title || actionRow?.recommended_title || '--'}
-          sub={locIntel?.title_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.title_avg_nr)}` : undefined}
+          sub={locIntel?.best_title_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.best_title_avg_nr)}` : undefined}
           highlight
         />
         <SummaryItem
           label="Recommended Category"
           value={locIntel?.best_category || actionRow?.recommended_category || '--'}
-          sub={locIntel?.cat_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.cat_avg_nr)}` : undefined}
+          sub={locIntel?.best_category_avg_nr != null ? `Avg NR: ${formatCurrency(locIntel.best_category_avg_nr)}` : undefined}
           highlight
         />
         {/* Best Day removed per Ayushi feedback (S37) -- was limiting posting */}
@@ -134,16 +134,16 @@ export default function LocationDetail() {
       </div>
 
       {/* Title Rankings */}
-      {locIntel?.title_rankings && (
+      {locIntel?.title_table && (
         <Section title="Title Performance">
-          <DataTable columns={titleColumns} data={locIntel.title_rankings} />
+          <DataTable columns={titleColumns} data={locIntel.title_table} />
         </Section>
       )}
 
       {/* Category Rankings */}
-      {locIntel?.category_rankings && (
+      {locIntel?.category_table && (
         <Section title="Category Performance">
-          <DataTable columns={categoryColumns} data={locIntel.category_rankings} />
+          <DataTable columns={categoryColumns} data={locIntel.category_table} />
         </Section>
       )}
 

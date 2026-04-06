@@ -26,10 +26,10 @@ function normalizeIntel(raw) {
   if (!raw) return [];
   return Array.isArray(raw) ? raw : Object.values(raw);
 }
-function aggregateByField(intel, field, rankingsKey) {
+function aggregateByField(intel, field, tableKey) {
   const map = {};
   intel.forEach((loc) => {
-    (loc[rankingsKey] || []).forEach((item) => {
+    (loc[tableKey] || []).forEach((item) => {
       const name = item[field];
       if (!name) return;
       if (!map[name]) map[name] = { [field]: name, total_nr: 0, total_profit: 0, total_runs: 0, locations: 0 };
@@ -140,8 +140,12 @@ export default function Intelligence() {
 
 function TitlesTab({ intel, locations, navigate }) {
   const [sel, setSel] = useState('');
-  const global = useMemo(() => aggregateByField(intel, 'title', 'title_rankings'), [intel]);
-  const local = useMemo(() => sel ? (intel.find((l) => l.location === sel)?.title_rankings || []) : [], [intel, sel]);
+  const global = useMemo(() => aggregateByField(intel, 'title', 'title_table'), [intel]);
+  const local = useMemo(() => {
+    if (!sel) return [];
+    const loc = intel.find((l) => l.location === sel);
+    return loc?.title_table || [];
+  }, [intel, sel]);
   const gCols = [
     { key: 'title', label: 'Title', render: (v) => <span className="text-white">{v}</span> },
     { key: 'avg_total_nr', label: 'Avg NR', align: 'right', render: (_, r) => nrCell(r.avg_total_nr) },
@@ -172,8 +176,12 @@ function TitlesTab({ intel, locations, navigate }) {
 
 function CategoriesTab({ intel, locations }) {
   const [sel, setSel] = useState('');
-  const global = useMemo(() => aggregateByField(intel, 'category', 'category_rankings'), [intel]);
-  const local = useMemo(() => sel ? (intel.find((l) => l.location === sel)?.category_rankings || []) : [], [intel, sel]);
+  const global = useMemo(() => aggregateByField(intel, 'category', 'category_table'), [intel]);
+  const local = useMemo(() => {
+    if (!sel) return [];
+    const loc = intel.find((l) => l.location === sel);
+    return loc?.category_table || [];
+  }, [intel, sel]);
   const gCols = [
     { key: 'category', label: 'Category', render: (v) => <span className="text-white">{v}</span> },
     { key: 'avg_total_nr', label: 'Avg NR', align: 'right', render: (_, r) => nrCell(r.avg_total_nr) },
@@ -204,7 +212,7 @@ function CategoriesTab({ intel, locations }) {
 
 function BestDayTab({ intel }) {
   const rows = useMemo(() => intel.map((loc) => {
-    const dv = {}; (loc.day_rankings || []).forEach((d) => { dv[d.day] = d.avg_total_nr; });
+    const dv = {}; (loc.day_table || []).forEach((d) => { const day = d.day_of_week_posted || d.DayOfWeek_Posted || d.day || ''; dv[day] = d.avg_total_nr || d.Avg_Total_NR || 0; });
     const vals = DAYS.map((day) => dv[day] ?? null);
     const valid = vals.filter((v) => v != null);
     return { location: loc.location, best_day: loc.best_day, values: vals,
@@ -295,11 +303,18 @@ function FrequencyTab({ data, navigate }) {
     { key: 'title', label: 'Title', render: (v) => <span className="text-white">{v}</span> },
     { key: 'category', label: 'Category' },
     { key: 'optimal_posts_per_week', label: 'Optimal/Wk', align: 'center', render: (v) => <span className={`font-semibold ${v > 1 ? 'text-[#1E8449]' : 'text-white'}`}>{v ? `${v}x` : '--'}</span> },
-    { key: 'expected_weekly_nr', label: 'Expected Wk NR', align: 'right', render: (v) => nrCell(v) },
+    { key: 'expected_weekly_nr', label: 'Weekly NR', align: 'right', render: (v) => nrCell(v) },
+    { key: 'nr_per_post_at_optimal', label: 'NR/Post', align: 'right', render: (v) => v != null ? nrCell(v) : '--' },
     { key: 'nr_at_1x', label: 'NR at 1x', align: 'right', render: (v) => formatCurrency(v) },
     { key: 'extra_nr_vs_1x', label: 'Extra vs 1x', align: 'right', render: (v) => nrCell(v) },
-    { key: 'max_observed_posts_wk', label: 'Max Obs', align: 'center', render: (v) => v ? `${v}x` : '--' },
-    { key: 'nr_curve', label: 'NR Curve', sortable: false, width: '200px', render: (v) => v ? <span className="text-xs text-[#888] font-mono">{v}</span> : '--' },
+    { key: 'nr_curve', label: 'NR Curve (per post)', sortable: false, width: '220px', render: (v, row) => {
+      // Show per-post NR at each frequency from per_post_curve if available
+      const ppc = row?.per_post_curve;
+      if (ppc && Array.isArray(ppc) && ppc.length > 0) {
+        return <span className="text-xs text-[#888] font-mono">{ppc.map((p) => `${p.frequency}x=$${p.per_post_nr}`).join(' | ')}</span>;
+      }
+      return v ? <span className="text-xs text-[#888] font-mono">{v}</span> : '--';
+    }},
   ];
   return (
     <div>

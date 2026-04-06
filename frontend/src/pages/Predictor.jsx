@@ -115,7 +115,7 @@ export default function Predictor() {
       : Object.values(data.location_intelligence);
     const set = new Set();
     intel.forEach((loc) => {
-      (loc.title_table || loc.title_rankings || []).forEach((t) => { if (t.title || t.Title) set.add(t.title || t.Title); });
+      (loc.title_table || []).forEach((t) => { if (t.title || t.Title) set.add(t.title || t.Title); });
     });
     return [...set].sort();
   }, [data]);
@@ -127,7 +127,7 @@ export default function Predictor() {
       : Object.values(data.location_intelligence);
     const set = new Set();
     intel.forEach((loc) => {
-      (loc.category_table || loc.category_rankings || []).forEach((c) => { if (c.category || c.Category) set.add(c.category || c.Category); });
+      (loc.category_table || []).forEach((c) => { if (c.category || c.Category) set.add(c.category || c.Category); });
     });
     return [...set].sort();
   }, [data]);

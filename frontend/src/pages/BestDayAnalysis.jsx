@@ -17,7 +17,7 @@ export default function BestDayAnalysis() {
 
     return intel.map((loc) => {
       const dayValues = {};
-      loc.day_rankings?.forEach((d) => {
+      loc.day_table?.forEach((d) => {
         dayValues[d.day] = d.avg_total_nr;
       });
 

@@ -16,7 +16,7 @@ export default function CategoryAnalysis() {
       : Object.values(data.location_intelligence);
 
     intel.forEach((loc) => {
-      loc.category_rankings?.forEach((c) => {
+      loc.category_table?.forEach((c) => {
         if (!catMap[c.category]) {
           catMap[c.category] = { category: c.category, total_nr: 0, total_profit: 0, total_runs: 0, locations: 0 };
         }
@@ -48,7 +48,7 @@ export default function CategoryAnalysis() {
       ? data.location_intelligence
       : Object.values(data.location_intelligence);
     const loc = intel.find((l) => l.location === selectedLocation);
-    return loc?.category_rankings || [];
+    return loc?.category_table || [];
   }, [data, selectedLocation]);
 
   const globalColumns = [

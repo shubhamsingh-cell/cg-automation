@@ -523,6 +523,7 @@ def compute_frequency_optimization(daily: pd.DataFrame, runs: pd.DataFrame) -> l
 
     Groups by [Combo, ISO_Week], counts posts, sums NR, and finds
     the frequency that produces the highest average weekly NR.
+    Also computes per-post NR at each frequency level.
     """
     logger.info("Step 7: Computing frequency optimisation")
 
@@ -531,6 +532,15 @@ def compute_frequency_optimization(daily: pd.DataFrame, runs: pd.DataFrame) -> l
     run_weekly["ISO_Year"] = run_weekly["D1_Date"].dt.isocalendar().year.astype(int)
     run_weekly["ISO_Week"] = run_weekly["D1_Date"].dt.isocalendar().week.astype(int)
     run_weekly["Year_Week"] = run_weekly["ISO_Year"].astype(str) + "-W" + run_weekly["ISO_Week"].astype(str).str.zfill(2)
+
+    # Build display name lookup: key -> display name
+    loc_names: dict[str, str] = {}
+    title_names: dict[str, str] = {}
+    cat_names: dict[str, str] = {}
+    for _, row in runs.iterrows():
+        loc_names.setdefault(row["Location_key"], row["Location"])
+        title_names.setdefault(row["Title_key"], row["Title"])
+        cat_names.setdefault(row["Category_key"], row["Category"])
 
     # Group by Combo + Year_Week
     weekly = (
@@ -560,9 +570,22 @@ def compute_frequency_optimization(daily: pd.DataFrame, runs: pd.DataFrame) -> l
         extra_nr = round(expected_nr - nr_at_1x, 2)
         max_observed = int(freq_curve.index.max())
 
-        # Build NR curve string
+        # Build NR curve string with per-post breakdown
         curve_parts = [f"{int(f)}x->${nr:.2f}" for f, nr in freq_curve.items()]
         nr_curve_str = " | ".join(curve_parts)
+
+        # Per-post NR at optimal frequency
+        nr_per_post_at_optimal = round(expected_nr / optimal_freq, 2) if optimal_freq > 0 else 0.0
+
+        # Full per-post curve for frontend display
+        per_post_curve: list[dict[str, Any]] = []
+        for f, nr in freq_curve.items():
+            f_int = int(f)
+            per_post_curve.append({
+                "frequency": f_int,
+                "weekly_nr": round(nr, 2),
+                "per_post_nr": round(nr / f_int, 2) if f_int > 0 else 0,
+            })
 
         # Get location/title/category from combo
         parts = str(combo).split("|")
@@ -576,12 +599,18 @@ def compute_frequency_optimization(daily: pd.DataFrame, runs: pd.DataFrame) -> l
                 "Location_key": loc_key,
                 "Title_key": title_key,
                 "Category_key": cat_key,
+                # Display names for frontend
+                "Location": loc_names.get(loc_key, loc_key),
+                "Title": title_names.get(title_key, title_key),
+                "Category": cat_names.get(cat_key, cat_key),
                 "Optimal_Posts_Per_Week": optimal_freq,
                 "Expected_Weekly_NR": expected_nr,
+                "NR_Per_Post_At_Optimal": nr_per_post_at_optimal,
                 "NR_at_1x": nr_at_1x,
                 "Extra_NR_vs_1x": extra_nr,
                 "Max_Observed_Posts_Wk": max_observed,
                 "NR_Curve": nr_curve_str,
+                "Per_Post_Curve": per_post_curve,
                 "Weeks_Observed": len(combo_weekly),
             }
         )
