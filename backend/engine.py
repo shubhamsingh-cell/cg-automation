@@ -15,6 +15,20 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Lazy import to avoid circular dependency
+_llm_router = None
+
+def _get_llm_router():
+    """Lazy-load llm_router to avoid circular imports."""
+    global _llm_router
+    if _llm_router is None:
+        try:
+            import llm_router as _lr
+            _llm_router = _lr
+        except ImportError:
+            _llm_router = False
+    return _llm_router if _llm_router else None
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -121,10 +135,29 @@ def convert_cumulative_to_daily(df: pd.DataFrame) -> pd.DataFrame:
     df["DayOfWeek_Num"] = df["Date"].dt.dayofweek  # 0=Monday
     df["Week"] = df["Date"].dt.isocalendar().week.astype(int)
 
-    # Normalised keys
+    # Title normalization (Gemini 3.1 Flash Lite for messy CL titles)
+    router = _get_llm_router()
+    if router and hasattr(router, "batch_normalize_titles"):
+        try:
+            unique_titles = df["Title"].unique().tolist()
+            title_map = router.batch_normalize_titles(unique_titles, max_batch=20)
+            if title_map:
+                df["Title_Normalized"] = df["Title"].map(title_map).fillna(df["Title"])
+                normalized_count = sum(1 for k, v in title_map.items() if k != v)
+                if normalized_count > 0:
+                    logger.info(f"  Normalized {normalized_count}/{len(unique_titles)} titles via LLM")
+            else:
+                df["Title_Normalized"] = df["Title"]
+        except Exception:
+            logger.debug("Title normalization skipped", exc_info=True)
+            df["Title_Normalized"] = df["Title"]
+    else:
+        df["Title_Normalized"] = df["Title"]
+
+    # Normalised keys (use normalized title for better matching)
     df["Location_key"] = df["Location"].apply(_key)
     df["Category_key"] = df["Category"].apply(_key)
-    df["Title_key"] = df["Title"].apply(_key)
+    df["Title_key"] = df["Title_Normalized"].apply(_key)
     df["Combo"] = df["Location_key"] + "|" + df["Title_key"] + "|" + df["Category_key"]
 
     # Daily financials
