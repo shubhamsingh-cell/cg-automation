@@ -10,9 +10,9 @@ import { formatCurrency, formatPercent, formatMultiplier, formatNumber, nrColorC
 const TABS = [
   { key: 'titles', label: 'Titles', icon: Type },
   { key: 'categories', label: 'Categories', icon: FolderOpen },
-  // Best Day tab removed per Ayushi feedback (S37) -- was limiting posting decisions
   { key: 'locations', label: 'Locations', icon: MapPin },
   { key: 'frequency', label: 'Frequency', icon: TrendingUp },
+  { key: 'decay', label: 'Decay Model', icon: Activity },
   { key: 'trends', label: 'Trends', icon: Activity },
 ];
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -131,6 +131,7 @@ export default function Intelligence() {
           {/* Best Day tab removed per Ayushi feedback (S37) */}
           {activeTab === 'locations' && <LocationsTab data={data} navigate={navigate} />}
           {activeTab === 'frequency' && <FrequencyTab data={data} navigate={navigate} />}
+          {activeTab === 'decay' && <DecayTab data={data} />}
           {activeTab === 'trends' && <TrendsTab data={data} />}
         </>
       )}
@@ -337,6 +338,159 @@ function FrequencyTab({ data, navigate }) {
       <DataTable columns={cols} data={rows} searchable searchPlaceholder="Search locations, titles..." searchFields={['location', 'title', 'category']}
         rowClassName={(row) => row.optimal_posts_per_week > 1 ? '!bg-[#1E8449]/5' : ''}
         onRowClick={(row) => navigate(`/location/${encodeURIComponent(row.location)}`)} emptyMessage="No frequency data available" />
+    </div>
+  );
+}
+
+function DecayTab({ data }) {
+  const decay = data?.impression_decay_model;
+  const global = decay?.global_model;
+  const curves = decay?.decay_curves || [];
+  const perLoc = decay?.per_location || {};
+  const locList = useMemo(() => {
+    return Object.values(perLoc).sort((a, b) => (a.half_life_days || 99) - (b.half_life_days || 99));
+  }, [perLoc]);
+
+  if (!global) {
+    return (
+      <div className="glass rounded-xl p-10 text-center gradient-border">
+        <Activity size={40} className="text-[#5A54BD]/40 mx-auto mb-4" />
+        <h3 className="text-lg font-semibold text-white mb-2">Insufficient Data</h3>
+        <p className="text-[#666] text-sm">Need posts with 3+ days of impression data to build decay models.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Global decay summary */}
+      <div className="glass rounded-xl p-5 gradient-border">
+        <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Global Impression Decay Model</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+          <div className="bg-white/[0.03] rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-[#6BB3CD]">{global.half_life_days}d</p>
+            <p className="text-[10px] text-[#666] mt-0.5">Half-Life</p>
+          </div>
+          <div className="bg-white/[0.03] rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-white">{global.amplitude.toFixed(0)}</p>
+            <p className="text-[10px] text-[#666] mt-0.5">Day 1 Impressions (A)</p>
+          </div>
+          <div className="bg-white/[0.03] rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-[#5A54BD]">{global.lambda.toFixed(4)}</p>
+            <p className="text-[10px] text-[#666] mt-0.5">Decay Rate (lambda)</p>
+          </div>
+          <div className="bg-white/[0.03] rounded-lg p-3 text-center">
+            <p className="text-xl font-bold text-[#1E8449]">{(global.r_squared * 100).toFixed(1)}%</p>
+            <p className="text-[10px] text-[#666] mt-0.5">Model Fit (R2)</p>
+          </div>
+        </div>
+        <p className="text-xs text-[#888]">
+          Formula: impressions(day) = {global.amplitude.toFixed(0)} x e<sup>(-{global.lambda.toFixed(4)} x day)</sup> &mdash; Impressions drop to 50% after {global.half_life_days} days
+        </p>
+      </div>
+
+      {/* Decay curve chart */}
+      {curves.length > 0 && (
+        <div className="glass rounded-xl p-5 gradient-border">
+          <h3 className="text-sm font-semibold text-white mb-3">Impression Decay Curve (Days 1-30)</h3>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={curves}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#222" />
+                <XAxis dataKey="day" stroke="#666" tick={{ fill: '#999', fontSize: 11 }} label={{ value: 'Day', position: 'insideBottom', offset: -5, fill: '#666', fontSize: 11 }} />
+                <YAxis stroke="#666" tick={{ fill: '#999', fontSize: 11 }} label={{ value: 'Impressions', angle: -90, position: 'insideLeft', fill: '#666', fontSize: 11 }} />
+                <Tooltip {...TT_STYLE} />
+                <Line type="monotone" dataKey="predicted_impressions" stroke="#5A54BD" strokeWidth={2} name="Model" dot={false} />
+                <Line type="monotone" dataKey="actual_impressions" stroke="#1E8449" strokeWidth={1.5} name="Actual" dot={{ fill: '#1E8449', r: 2 }} connectNulls={false} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Per-location decay table */}
+      {locList.length > 0 && (
+        <div className="glass rounded-xl p-5 gradient-border">
+          <h3 className="text-sm font-semibold text-white mb-3">Decay by Location ({locList.length} locations)</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-[#666] text-xs uppercase tracking-wider border-b border-white/5">
+                  <th className="text-left py-2 px-3">Location</th>
+                  <th className="text-right py-2 px-3">Half-Life</th>
+                  <th className="text-right py-2 px-3">Decay Rate</th>
+                  <th className="text-right py-2 px-3">Day 1 Impr</th>
+                  <th className="text-right py-2 px-3">R2</th>
+                  <th className="text-center py-2 px-3">Speed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {locList.slice(0, 50).map((loc, i) => {
+                  const hl = loc.half_life_days;
+                  const speed = hl < 3 ? 'Fast' : hl < 7 ? 'Normal' : 'Slow';
+                  const speedColor = hl < 3 ? '#E74C3C' : hl < 7 ? '#E67E22' : '#1E8449';
+                  return (
+                    <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                      <td className="py-2 px-3 text-white font-medium">{loc.location}</td>
+                      <td className="py-2 px-3 text-right font-semibold" style={{ color: speedColor }}>{hl}d</td>
+                      <td className="py-2 px-3 text-right text-[#888]">{loc.lambda.toFixed(4)}</td>
+                      <td className="py-2 px-3 text-right text-[#888]">{loc.amplitude.toFixed(0)}</td>
+                      <td className="py-2 px-3 text-right text-[#888]">{(loc.r_squared * 100).toFixed(0)}%</td>
+                      <td className="py-2 px-3 text-center">
+                        <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: `${speedColor}15`, color: speedColor }}>{speed}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-[#555] mt-3">
+            Fast decay (&lt;3d) = repost sooner | Normal (3-7d) = standard cadence | Slow (&gt;7d) = impressions hold well, delay repost
+          </p>
+        </div>
+      )}
+
+      {/* Posting time recommendations */}
+      {data?.posting_time_recommendations?.global && (
+        <div className="glass rounded-xl p-5 gradient-border">
+          <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">Posting Time Recommendations</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <h4 className="text-xs font-semibold text-[#6BB3CD] mb-2">Best Days (Industry + Your Data)</h4>
+              <div className="space-y-1.5">
+                {(data.posting_time_recommendations.global.global_day_performance || []).map((d, i) => (
+                  <div key={i} className="flex items-center justify-between py-1 px-2 rounded bg-white/[0.02]">
+                    <span className={`text-sm ${i === 0 ? 'text-[#1E8449] font-semibold' : 'text-[#ccc]'}`}>{d.DayOfWeek_Posted || d.dayofweek_posted}</span>
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="text-[#888]">{d.Runs || d.runs} runs</span>
+                      <span className={d.Avg_NR > 0 ? 'text-[#1E8449]' : 'text-[#C0392B]'}>${(d.Avg_NR || d.avg_nr || 0).toFixed(2)} avg NR</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold text-[#6BB3CD] mb-2">Best Time Windows</h4>
+              <div className="space-y-1.5">
+                {(data.posting_time_recommendations.global.best_time_windows || []).map((tw, i) => (
+                  <div key={i} className="flex items-center justify-between py-1 px-2 rounded bg-white/[0.02]">
+                    <span className="text-sm text-white font-mono">{tw.window}</span>
+                    <span className="text-xs text-[#888]">{tw.label}</span>
+                  </div>
+                ))}
+              </div>
+              <h4 className="text-xs font-semibold text-[#E67E22] mt-4 mb-2">Posting Rules</h4>
+              <ul className="text-xs text-[#888] space-y-1">
+                {(data.posting_time_recommendations.global.repost_rules || []).map((r, i) => (
+                  <li key={i} className="flex gap-2"><span className="text-[#E67E22] shrink-0">-</span>{r}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

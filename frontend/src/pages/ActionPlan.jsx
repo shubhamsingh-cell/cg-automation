@@ -181,6 +181,15 @@ export default function ActionPlan() {
     { key: 'location', label: 'Location', render: (val) => locLink(val) },
     { key: 'recommended_title', label: 'Title', render: (val, row) => <span className="text-white">{val || row.title}</span> },
     { key: 'recommended_category', label: 'Category', render: (val, row) => val || row.category || '--' },
+    { key: 'best_day', label: 'Best Day', width: '100px', render: (val, row) => {
+      const isToday = row.today_is_best_day || row.Today_Is_Best_Day;
+      return (
+        <span className={isToday ? 'text-[#1E8449] font-semibold' : 'text-[#ccc]'}>
+          {val || '--'}{isToday ? ' *' : ''}
+        </span>
+      );
+    }},
+    { key: 'best_time', label: 'Best Time', width: '90px', render: (val) => <span className="text-xs text-[#6BB3CD] font-mono">{val || '10-12'}</span> },
     { key: 'tier', label: 'Tier', width: '76px', render: (val) => <TierBadge tier={val} /> },
     { key: 'd1_cost', label: 'Cost', align: 'right', render: (val, row) => formatCurrency(v(row, 'd1_cost', 'D1_Cost', 'cost')) },
     { key: 'profit_pct', label: 'Profit %', align: 'right', render: (val, row) => { const p = v(row, 'profit_pct', 'Profit_Pct'); return <span className={nrColorClass(p)}>{formatPercent(p)}</span>; } },

@@ -924,6 +924,12 @@ def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[s
     # Step 9b: Enrich action plan with geocoded coordinates (if available)
     _enrich_with_geocoding(daily_action_plan)
 
+    # Step 10: Posting time recommendations
+    posting_time_recs = compute_posting_time_recommendations(runs, location_intelligence)
+
+    # Step 11: Impression decay model
+    decay_model = compute_impression_decay_model(daily)
+
     scorecard = build_scorecard(runs, daily_action_plan, freq_data)
 
     # Serialise sub-tables
@@ -952,7 +958,29 @@ def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[s
             "category_table": info.get("category_table", []),
             "combo_table": info.get("combo_table", []),
             "day_table": info.get("day_table", []),
+            "decay_half_life": info.get("decay_half_life"),
+            "decay_lambda": info.get("decay_lambda"),
+            "decay_r_squared": info.get("decay_r_squared"),
         }
+
+    # Enrich action plan with posting time recommendations
+    for item in daily_action_plan:
+        loc_key = item.get("Location_key", "")
+        loc_timing = posting_time_recs.get("per_location", {}).get(loc_key, {})
+        item["Best_Time"] = loc_timing.get("best_time", "10:00-12:00")
+        item["Best_Time_Label"] = loc_timing.get("best_time_label", "Morning peak")
+        item["Today_Is_Best_Day"] = loc_timing.get("today_is_best", False)
+        item["Repost_Cadence"] = "48h min"
+
+    # Enrich location intelligence with decay data
+    for loc_key, info in location_intelligence.items():
+        decay_loc = decay_model.get("per_location", {}).get(loc_key)
+        if decay_loc:
+            info["decay_half_life"] = decay_loc["half_life_days"]
+            info["decay_lambda"] = decay_loc["lambda"]
+            info["decay_r_squared"] = decay_loc["r_squared"]
+        else:
+            info["decay_half_life"] = None
 
     result = {
         "scorecard": scorecard,
@@ -966,6 +994,8 @@ def run_analysis(df: pd.DataFrame, sell_cpa: float = DEFAULT_SELL_CPA) -> dict[s
         "location_multipliers": multiplier_table.to_dict("records"),
         "frequency_optimization": freq_data,
         "all_runs": all_runs_records,
+        "posting_time_recommendations": posting_time_recs,
+        "impression_decay_model": decay_model,
     }
 
     logger.info("=" * 60)
@@ -1119,6 +1149,267 @@ def compare_with_benchmarks(
         item["Benchmark_Best_NR"] = round(best_bm.get("avg_nr", 0), 2)
 
     return daily_action_plan
+
+
+# ====================================================================
+# STEP 10 -- Posting Time Optimizer (Research-driven)
+# ====================================================================
+
+# Industry research benchmarks (classified ad performance studies)
+_DAY_RANK: dict[str, int] = {
+    "Sunday": 1, "Saturday": 2, "Monday": 3,
+    "Tuesday": 4, "Wednesday": 5, "Thursday": 6, "Friday": 7,
+}
+
+_TIME_WINDOWS: list[dict[str, Any]] = [
+    {"window": "10:00-12:00", "label": "Morning peak (break time)", "score": 1.0},
+    {"window": "17:00-18:00", "label": "Evening peak (after work)", "score": 0.8},
+    {"window": "08:00-10:00", "label": "Early morning", "score": 0.6},
+    {"window": "12:00-14:00", "label": "Lunch hour", "score": 0.5},
+    {"window": "06:00-08:00", "label": "Pre-work (weekends)", "score": 0.7},
+]
+
+
+def compute_posting_time_recommendations(
+    runs: pd.DataFrame,
+    location_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    """Generate posting time recommendations per location.
+
+    Combines internal data (best day per location from actual performance)
+    with industry research (best time-of-day, day ranking benchmarks).
+
+    CL posts peak in hours 0-4 (top of chronological sort), then decay.
+    48-hour minimum between same-ad reposts (CL TOS).
+
+    Args:
+        runs: Post runs DataFrame.
+        location_intelligence: Dict from compute_location_intelligence().
+
+    Returns:
+        Dict with global_recommendations and per-location timing.
+    """
+    logger.info("Step 10: Computing posting time recommendations")
+
+    # Global day-of-week performance from data
+    paid = runs[runs["D1_Cost"] > 0]
+    global_day_perf = (
+        paid.groupby("DayOfWeek_Posted")
+        .agg(
+            Runs=("Post ID", "nunique"),
+            Avg_NR=("Total_NR", "mean"),
+            Avg_D1_Applies=("D1_Applies", "mean"),
+        )
+        .reset_index()
+        .sort_values("Avg_NR", ascending=False)
+    )
+    global_day_perf["Avg_NR"] = global_day_perf["Avg_NR"].round(2)
+    global_day_perf["Avg_D1_Applies"] = global_day_perf["Avg_D1_Applies"].round(2)
+
+    # Build per-location posting schedule recommendations
+    today_name = datetime.now().strftime("%A")
+    per_location: list[dict[str, Any]] = {}
+
+    for loc_key, intel in location_intelligence.items():
+        best_day_data = intel.get("best_day")
+        best_day_nr = intel.get("best_day_avg_nr", 0)
+        worst_day = intel.get("worst_day")
+
+        # Combine data-driven best day with industry benchmark
+        data_day = best_day_data or "Monday"
+        industry_rank = _DAY_RANK.get(data_day, 5)
+
+        # Score: data performance + industry alignment
+        alignment_bonus = max(0, (8 - industry_rank)) / 7  # 0-1 scale
+        confidence = "high" if intel.get("day_table") and len(intel["day_table"]) >= 3 else "low"
+
+        per_location[loc_key] = {
+            "location": intel["Location"],
+            "best_day_data": data_day,
+            "best_day_nr": best_day_nr,
+            "worst_day": worst_day,
+            "industry_alignment": round(alignment_bonus, 2),
+            "confidence": confidence,
+            "best_time": "10:00-12:00",
+            "best_time_label": "Morning peak (break time)",
+            "today_is_best": today_name == data_day,
+            "repost_cadence": "Every 48 hours minimum",
+        }
+
+    # Global recommendations
+    global_recs = {
+        "best_days_industry": ["Sunday", "Saturday", "Monday"],
+        "best_time_windows": _TIME_WINDOWS,
+        "repost_rules": [
+            "48-hour minimum between same-ad reposts (CL TOS)",
+            "Renew every 48 hours to bump back to top of listings",
+            "1 well-crafted post per 2 days outperforms multiple daily posts",
+            "Sunday/Monday morning posts get most views (industry research)",
+        ],
+        "global_day_performance": global_day_perf.to_dict("records"),
+        "total_locations_analyzed": len(per_location),
+    }
+
+    logger.info(f"  Posting time recommendations for {len(per_location)} locations")
+    return {
+        "global": global_recs,
+        "per_location": per_location,
+    }
+
+
+# ====================================================================
+# STEP 11 -- Impression Decay Model (Exponential Curve Fitting)
+# ====================================================================
+
+def compute_impression_decay_model(daily: pd.DataFrame) -> dict[str, Any]:
+    """Fit exponential decay curves to impression data per location.
+
+    For each location, fits: impressions(day) = A * e^(-lambda * day)
+    using least-squares on the log-transformed data.
+
+    Returns decay parameters, half-life per location, and global averages.
+
+    Args:
+        daily: Daily data DataFrame from convert_cumulative_to_daily().
+
+    Returns:
+        Dict with global_model, per_location models, and decay_curves.
+    """
+    logger.info("Step 11: Computing impression decay models")
+
+    # Only use posts with sufficient data (3+ days of impressions)
+    post_lengths = daily.groupby("Post ID").size()
+    valid_posts = post_lengths[post_lengths >= 3].index
+    filtered = daily[daily["Post ID"].isin(valid_posts)].copy()
+
+    if filtered.empty:
+        logger.warning("  No posts with 3+ days for decay modeling")
+        return {"global_model": None, "per_location": {}, "decay_curves": []}
+
+    # Compute average impressions by Day_Num across all posts
+    global_curve = (
+        filtered.groupby("Day_Num")["Daily_Impressions"]
+        .agg(["mean", "median", "count"])
+        .reset_index()
+        .rename(columns={"mean": "avg_impressions", "median": "median_impressions", "count": "sample_size"})
+    )
+    global_curve = global_curve[global_curve["sample_size"] >= 5]  # Need 5+ posts per day
+
+    # Fit exponential decay: y = A * e^(-lambda * x)
+    # Log transform: ln(y) = ln(A) - lambda * x
+    global_model = _fit_decay(global_curve["Day_Num"].values, global_curve["avg_impressions"].values)
+
+    # Per-location decay models
+    per_location: dict[str, dict[str, Any]] = {}
+    for loc_key, loc_data in filtered.groupby("Location_key"):
+        loc_curve = (
+            loc_data.groupby("Day_Num")["Daily_Impressions"]
+            .agg(["mean", "count"])
+            .reset_index()
+            .rename(columns={"mean": "avg_impressions", "count": "sample_size"})
+        )
+        loc_curve = loc_curve[loc_curve["sample_size"] >= 2]
+
+        if len(loc_curve) < 3:
+            continue
+
+        location_name = loc_data["Location"].iloc[0]
+        model = _fit_decay(loc_curve["Day_Num"].values, loc_curve["avg_impressions"].values)
+        if model:
+            per_location[loc_key] = {
+                "location": location_name,
+                **model,
+                "data_points": len(loc_curve),
+            }
+
+    # Build decay curve data for frontend chart (days 1-30)
+    decay_curves: list[dict[str, Any]] = []
+    if global_model:
+        A = global_model["amplitude"]
+        lam = global_model["lambda"]
+        for day in range(1, 31):
+            predicted = A * np.exp(-lam * day)
+            actual_row = global_curve[global_curve["Day_Num"] == day]
+            actual = float(actual_row["avg_impressions"].iloc[0]) if len(actual_row) > 0 else None
+            decay_curves.append({
+                "day": day,
+                "predicted_impressions": round(predicted, 1),
+                "actual_impressions": round(actual, 1) if actual is not None else None,
+                "retention_pct": round((predicted / A) * 100, 1) if A > 0 else 0,
+            })
+
+    result = {
+        "global_model": global_model,
+        "per_location": per_location,
+        "decay_curves": decay_curves,
+        "locations_modeled": len(per_location),
+        "posts_analyzed": len(valid_posts),
+    }
+
+    if global_model:
+        logger.info(
+            "  Decay model: A=%.1f, lambda=%.4f, half_life=%.1f days, "
+            "R²=%.3f, %d locations modeled",
+            global_model["amplitude"], global_model["lambda"],
+            global_model["half_life_days"], global_model["r_squared"],
+            len(per_location),
+        )
+    else:
+        logger.info("  Insufficient data for global decay model")
+
+    return result
+
+
+def _fit_decay(days: np.ndarray, impressions: np.ndarray) -> dict[str, Any] | None:
+    """Fit exponential decay y = A * e^(-lambda * x) via log-linear regression.
+
+    Args:
+        days: Array of day numbers (1-based).
+        impressions: Array of average daily impressions.
+
+    Returns:
+        Dict with amplitude, lambda, half_life_days, r_squared, or None if fit fails.
+    """
+    # Filter out zero/negative impressions (can't log-transform)
+    mask = impressions > 0
+    x = days[mask].astype(float)
+    y = impressions[mask].astype(float)
+
+    if len(x) < 3:
+        return None
+
+    try:
+        # Log-linear fit: ln(y) = ln(A) - lambda * x
+        log_y = np.log(y)
+        # Polyfit degree 1: coefficients [slope, intercept] = [-lambda, ln(A)]
+        coeffs = np.polyfit(x, log_y, 1)
+        neg_lambda = coeffs[0]
+        ln_A = coeffs[1]
+
+        lam = -neg_lambda
+        A = np.exp(ln_A)
+
+        # Only valid if lambda > 0 (decay, not growth) and A > 0
+        if lam <= 0 or A <= 0:
+            return None
+
+        # Half-life: time for impressions to drop to 50%
+        half_life = np.log(2) / lam
+
+        # R-squared
+        y_pred = A * np.exp(-lam * x)
+        ss_res = np.sum((y - y_pred) ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        r_sq = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+        return {
+            "amplitude": round(float(A), 2),
+            "lambda": round(float(lam), 4),
+            "half_life_days": round(float(half_life), 1),
+            "r_squared": round(float(r_sq), 3),
+        }
+    except (np.linalg.LinAlgError, ValueError, RuntimeWarning):
+        return None
 
 
 # ====================================================================
