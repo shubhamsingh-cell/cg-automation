@@ -186,20 +186,38 @@ export default function Predictor() {
   const locationIntel = prediction?.location_intelligence || {};
   const checklist = prediction?.checklist || prediction?.recommendations || [];
 
-  // Empty state
+  // Empty state -- centered card matching SlotOps design
   if (!data) {
     return (
-      <div className="page-enter">
-        <div className="flex items-center gap-3 mb-6">
-          <Sparkles size={22} className="text-[#5A54BD]" />
-          <h2 className="text-xl font-bold text-white">Predictor</h2>
-        </div>
-        <div className="glass rounded-xl p-10 text-center gradient-border">
-          <Sparkles size={40} className="text-[#5A54BD]/40 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-white mb-2">Upload Data First</h3>
-          <p className="text-[#666] text-sm mb-6 max-w-md mx-auto">
-            Upload your campaign data to unlock the Predictor. It uses your historical performance data to forecast how a hypothetical post will perform.
+      <div className="flex-1 flex flex-col items-center justify-center" style={{ minHeight: '60vh' }}>
+        <div className="w-full max-w-lg mx-auto text-center">
+          <div style={{ width: '80px', height: '80px', margin: '0 auto 1.5rem', borderRadius: '20px', background: 'linear-gradient(135deg, rgba(90,84,189,0.15), rgba(107,179,205,0.15))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Sparkles size={36} style={{ color: '#5A54BD' }} />
+          </div>
+          <h2 style={{ fontSize: '1.75rem', fontWeight: 700, color: 'white', marginBottom: '0.75rem' }}>Performance Predictor</h2>
+          <p style={{ color: '#71717a', fontSize: '0.9375rem', lineHeight: 1.6, marginBottom: '2rem', maxWidth: '420px', margin: '0 auto 2rem' }}>
+            Upload your campaign data to unlock predictions. The Predictor uses your historical performance to forecast how a hypothetical post will perform at any location.
           </p>
+          <div style={{ background: 'rgba(17,17,17,0.8)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '16px', padding: '2rem', marginBottom: '1.5rem' }}>
+            <div className="grid grid-cols-3 gap-4" style={{ marginBottom: '1.5rem' }}>
+              {[
+                { icon: MapPin, label: 'Location scoring', desc: 'Per-market performance' },
+                { icon: DollarSign, label: 'Revenue forecast', desc: 'Est D1 NR + Lifetime NR' },
+                { icon: TrendingUp, label: 'POST / SKIP verdict', desc: '6-factor scoring model' },
+              ].map((f, i) => (
+                <div key={i} style={{ textAlign: 'center' }}>
+                  <div style={{ width: '40px', height: '40px', margin: '0 auto 0.5rem', borderRadius: '10px', background: 'rgba(90,84,189,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <f.icon size={18} style={{ color: '#8B86E0' }} />
+                  </div>
+                  <p style={{ fontSize: '0.8125rem', color: 'white', fontWeight: 600 }}>{f.label}</p>
+                  <p style={{ fontSize: '0.6875rem', color: '#71717a' }}>{f.desc}</p>
+                </div>
+              ))}
+            </div>
+            <a href="/upload" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: '#0a66c2', color: 'white', border: 'none', borderRadius: '8px', padding: '0.75rem 1.5rem', fontSize: '0.9375rem', fontWeight: 600, textDecoration: 'none', minHeight: '44px' }}>
+              Upload Campaign Data
+            </a>
+          </div>
         </div>
       </div>
     );
