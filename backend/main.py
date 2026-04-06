@@ -1505,7 +1505,7 @@ def _safe_call(fn: Any, *args: Any, **kwargs: Any) -> None:
 
 @app.post("/api/analyse")
 async def api_analyse(
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
     sell_cpa: float = Form(1.20),
     client_name: str = Form(""),
     job_category: str = Form(""),
@@ -1515,8 +1515,11 @@ async def api_analyse(
 ) -> dict[str, Any]:
     """Upload an Excel file and run the full CG Automation analysis.
 
+    If no file is uploaded (file is None or empty filename), loads the
+    built-in sample_data.csv for demo mode.
+
     Args:
-        file: Uploaded Excel file (multipart/form-data).
+        file: Uploaded Excel file (multipart/form-data), or None for demo.
         sell_cpa: Revenue per apply in USD (varies by client/campaign, default $1.20).
         client_name: Optional client name for context-enriched insights.
         job_category: Optional job category for context-enriched insights.
@@ -1527,26 +1530,35 @@ async def api_analyse(
     Returns:
         Full JSON analysis with scorecard, daily action plan, and all views.
     """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file uploaded")
+    # Demo mode: load sample data if no file uploaded
+    is_demo = file is None or not file.filename
+    if is_demo:
+        sample_path = Path(__file__).parent / "data" / "sample_data.csv"
+        if not sample_path.exists():
+            raise HTTPException(status_code=404, detail="Sample data not found")
+        try:
+            contents = sample_path.read_bytes()
+            logger.info("Demo mode: loading sample_data.csv")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to load sample data: {exc}") from exc
+    else:
+        # Enforce 50 MB upload limit before reading into pandas
+        try:
+            contents = await file.read()
+        except Exception as exc:
+            logger.error("Failed to read uploaded file bytes", exc_info=True)
+            raise HTTPException(
+                status_code=400, detail=f"Failed to read file: {exc}"
+            ) from exc
 
-    # Enforce 50 MB upload limit before reading into pandas
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File size ({len(contents):,} bytes) exceeds 50 MB limit",
+            )
+
     try:
-        contents: bytes = await file.read()
-    except Exception as exc:
-        logger.error("Failed to read uploaded file bytes", exc_info=True)
-        raise HTTPException(
-            status_code=400, detail=f"Failed to read file: {exc}"
-        ) from exc
-
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File size ({len(contents):,} bytes) exceeds 50 MB limit",
-        )
-
-    try:
-        fname = (file.filename or "").lower()
+        fname = (file.filename or "").lower() if not is_demo else "sample_data.csv"
         if fname.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(contents))
         else:
@@ -1610,7 +1622,8 @@ async def api_analyse(
     _notify_slack_analysis(result, job_id)
 
     # Fire-and-forget Supabase persistence (non-blocking)
-    _persist_to_supabase(result, job_id, file.filename or "", sell_cpa)
+    _upload_filename = (file.filename if file else "") or ("sample_data.csv" if is_demo else "")
+    _persist_to_supabase(result, job_id, _upload_filename, sell_cpa)
 
     # Return JSON-safe copy (strip internal DataFrame / sell_cpa keys)
     response = {k: v for k, v in result.items() if not k.startswith("_")}
@@ -1620,7 +1633,7 @@ async def api_analyse(
         try:
             supabase_store.save_upload_data(
                 job_id=job_id,
-                filename=file.filename or "",
+                filename=_upload_filename,
                 sell_cpa=sell_cpa,
                 client_name=client_name.strip(),
                 analysis_data=response,
