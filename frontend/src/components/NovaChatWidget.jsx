@@ -39,23 +39,45 @@ export default function NovaChatWidget() {
         </div>
       )}
 
-      {/* Floating Button -- Nova branded gradient circle with "N" */}
+      {/* Floating Button -- Pulsing glow ring + gradient circle */}
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="fixed bottom-5 right-5 z-[9999] w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 hover:scale-105 hover:shadow-xl active:scale-95 focus-visible:outline-2 focus-visible:outline-[#5A54BD] focus-visible:outline-offset-2"
-        style={{
-          background: 'linear-gradient(135deg, #5A54BD, #6BB3CD)',
-          boxShadow: open
-            ? '0 4px 24px rgba(90, 84, 189, 0.4), 0 0 0 3px rgba(90, 84, 189, 0.15)'
-            : '0 4px 24px rgba(90, 84, 189, 0.3)',
-        }}
+        className="fixed bottom-5 right-5 z-[9999] group"
         aria-label={open ? 'Close Nova chat' : 'Open Nova chat'}
       >
-        {open ? (
-          <X size={22} className="text-white" />
-        ) : (
-          <span className="text-white text-lg font-bold">N</span>
-        )}
+        {/* Outer glow ring (animated) */}
+        <div
+          className="absolute inset-0 rounded-full animate-pulse"
+          style={{
+            background: 'radial-gradient(circle, rgba(90,84,189,0.35) 0%, transparent 70%)',
+            transform: 'scale(1.6)',
+            pointerEvents: 'none',
+          }}
+        />
+        {/* Second glow ring */}
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            boxShadow: '0 0 20px 6px rgba(90,84,189,0.25), 0 0 40px 12px rgba(107,179,205,0.15)',
+            pointerEvents: 'none',
+          }}
+        />
+        {/* Main circle */}
+        <div
+          className="relative w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 group-hover:scale-110 group-active:scale-95"
+          style={{
+            background: 'linear-gradient(135deg, #5A54BD, #6BB3CD)',
+            boxShadow: open
+              ? '0 4px 24px rgba(90,84,189,0.5), 0 0 0 3px rgba(90,84,189,0.2)'
+              : '0 4px 24px rgba(90,84,189,0.4)',
+          }}
+        >
+          {open ? (
+            <X size={22} className="text-white" />
+          ) : (
+            <span className="text-white text-lg font-bold">N</span>
+          )}
+        </div>
       </button>
     </>
   );

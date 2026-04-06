@@ -105,7 +105,7 @@ export default function Predictor() {
     const intel = Array.isArray(data.location_intelligence)
       ? data.location_intelligence
       : Object.values(data.location_intelligence);
-    return intel.map((l) => l.location).filter(Boolean).sort();
+    return intel.map((l) => l.location || l.Location).filter(Boolean).sort();
   }, [data]);
 
   const titles = useMemo(() => {
@@ -115,7 +115,7 @@ export default function Predictor() {
       : Object.values(data.location_intelligence);
     const set = new Set();
     intel.forEach((loc) => {
-      (loc.title_rankings || []).forEach((t) => { if (t.title) set.add(t.title); });
+      (loc.title_table || loc.title_rankings || []).forEach((t) => { if (t.title || t.Title) set.add(t.title || t.Title); });
     });
     return [...set].sort();
   }, [data]);
@@ -127,7 +127,7 @@ export default function Predictor() {
       : Object.values(data.location_intelligence);
     const set = new Set();
     intel.forEach((loc) => {
-      (loc.category_rankings || []).forEach((c) => { if (c.category) set.add(c.category); });
+      (loc.category_table || loc.category_rankings || []).forEach((c) => { if (c.category || c.Category) set.add(c.category || c.Category); });
     });
     return [...set].sort();
   }, [data]);

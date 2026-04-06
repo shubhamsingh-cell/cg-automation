@@ -131,8 +131,8 @@ export default function Layout({ user }) {
       </nav>
 
       {/* ---- Main Content ---- */}
-      <main className="flex-1 overflow-y-auto bg-[#0a0a0a] aurora-bg flex flex-col">
-        <div className="relative z-10 page-enter max-w-[1400px] mx-auto p-6 flex-1 w-full">
+      <main className="flex-1 overflow-y-auto bg-[#0a0a0a] aurora-bg flex flex-col min-h-0">
+        <div className="relative z-10 page-enter max-w-[1400px] mx-auto px-6 py-6 flex-1 w-full flex flex-col">
           <Outlet />
         </div>
         <footer className="relative z-10 mt-auto pt-4 pb-4 text-center text-xs text-[#333] border-t border-[#1a1a2a]">

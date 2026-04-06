@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import AuthGate from './components/AuthGate';
 import NovaChatWidget from './components/NovaChatWidget';
 import Upload from './pages/Upload';
+import UploadHistory from './pages/UploadHistory';
 import Dashboard from './pages/Dashboard';
 import ActionPlan from './pages/ActionPlan';
 import Intelligence from './pages/Intelligence';
@@ -32,6 +33,7 @@ export default function App() {
         <Route element={<Layout user={user} />}>
           <Route path="/" element={hasData ? <Navigate to="/dashboard" replace /> : <Navigate to="/upload" replace />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/upload-history" element={<UploadHistory />} />
           <Route path="/dashboard" element={hasData ? <Dashboard /> : <Navigate to="/upload" replace />} />
           <Route path="/action-plan" element={hasData ? <ActionPlan /> : <Navigate to="/upload" replace />} />
           <Route path="/intelligence" element={hasData ? <Intelligence /> : <Navigate to="/upload" replace />} />

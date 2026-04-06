@@ -1,20 +1,14 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { fetchLatestUpload, clearUploadData } from '../utils/api';
+import { fetchLatestUpload, clearUploadData, deleteSession } from '../utils/api';
 
 const AnalysisContext = createContext(null);
 
-/** Convert PascalCase/Mixed keys to snake_case for consistent frontend access.
- *  Handles: camelCase, PascalCase, ALL_CAPS, mixed (e.g. "TotalNR" -> "total_nr").
- *  Does NOT mangle already-snake_case keys or ALL-CAPS values used as labels. */
+/** Convert PascalCase/Mixed keys to snake_case for consistent frontend access. */
 function normalizeKey(key) {
-  // If already snake_case or lowercase, return as-is
   if (/^[a-z0-9_]+$/.test(key)) return key;
-  // If ALL_CAPS with underscores (e.g. "KEEP_RUNNING"), just lowercase
   if (/^[A-Z0-9_]+$/.test(key)) return key.toLowerCase();
   return key
-    // Insert _ before uppercase that follows lowercase/digit (camelCase boundary)
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    // Insert _ before uppercase that is followed by lowercase (handles "HTMLParser" -> "html_parser")
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
     .toLowerCase()
     .replace(/^_/, '')
@@ -28,7 +22,6 @@ function normalizeObj(obj) {
   for (const [k, v] of Object.entries(obj)) {
     const nk = normalizeKey(k);
     out[nk] = normalizeObj(v);
-    // Also keep original key for backward compat
     if (nk !== k) out[k] = out[nk];
   }
   return out;
@@ -37,8 +30,13 @@ function normalizeObj(obj) {
 export function AnalysisProvider({ children }) {
   const [data, setData] = useState(null);
   const [jobId, setJobId] = useState(null);
+  const [sessionId, setSessionId] = useState(() => {
+    try { return localStorage.getItem('cg_session_id') || null; }
+    catch { return null; }
+  });
   const [insightsCache, setInsightsCache] = useState({});
-  const [uploadMeta, setUploadMeta] = useState(null); // {filename, created_at, client_name}
+  const [uploadMeta, setUploadMeta] = useState(null);
+  const [changeSummary, setChangeSummary] = useState(null);
   const [restoring, setRestoring] = useState(true);
 
   const loadAnalysis = useCallback((analysisData, meta) => {
@@ -46,8 +44,20 @@ export function AnalysisProvider({ children }) {
     setData(normalized);
     setJobId(analysisData.job_id);
     setInsightsCache({});
-    if (meta) {
-      setUploadMeta(meta);
+    if (meta) setUploadMeta(meta);
+
+    // Save session_id to localStorage if present
+    if (analysisData.session_id) {
+      setSessionId(analysisData.session_id);
+      try { localStorage.setItem('cg_session_id', analysisData.session_id); }
+      catch { /* ignore */ }
+    }
+
+    // Store change summary if present (from daily upload)
+    if (analysisData.change_summary) {
+      setChangeSummary(analysisData.change_summary);
+    } else {
+      setChangeSummary(null);
     }
   }, []);
 
@@ -55,18 +65,31 @@ export function AnalysisProvider({ children }) {
     setInsightsCache((prev) => ({ ...prev, [key]: insight }));
   }, []);
 
+  const dismissChangeSummary = useCallback(() => {
+    setChangeSummary(null);
+  }, []);
+
   const clearData = useCallback(async () => {
+    const sid = sessionId;
     setData(null);
     setJobId(null);
+    setSessionId(null);
     setInsightsCache({});
     setUploadMeta(null);
+    setChangeSummary(null);
+    try { localStorage.removeItem('cg_session_id'); } catch { /* ignore */ }
+
     try {
-      await clearUploadData();
+      // Try to delete session data if we have a session_id
+      if (sid) {
+        await deleteSession(sid);
+      } else {
+        await clearUploadData();
+      }
     } catch (err) {
-      // Best-effort clear from server; local state is already cleared
-      console.warn('Failed to clear server upload data:', err);
+      console.warn('Failed to clear server data:', err);
     }
-  }, []);
+  }, [sessionId]);
 
   // On mount: check Supabase for persisted upload data
   useEffect(() => {
@@ -83,9 +106,15 @@ export function AnalysisProvider({ children }) {
             created_at: result.created_at || '',
             client_name: result.client_name || '',
           });
+          // Restore session_id from analysis data or localStorage
+          const sid = result.analysis_data.session_id;
+          if (sid) {
+            setSessionId(sid);
+            try { localStorage.setItem('cg_session_id', sid); }
+            catch { /* ignore */ }
+          }
         }
       } catch (err) {
-        // Silently fail -- user can always re-upload
         console.warn('Failed to restore persisted upload:', err);
       } finally {
         if (!cancelled) setRestoring(false);
@@ -97,8 +126,8 @@ export function AnalysisProvider({ children }) {
 
   return (
     <AnalysisContext.Provider value={{
-      data, jobId, insightsCache, uploadMeta, restoring,
-      loadAnalysis, cacheInsight, clearData,
+      data, jobId, sessionId, insightsCache, uploadMeta, restoring, changeSummary,
+      loadAnalysis, cacheInsight, clearData, dismissChangeSummary,
     }}>
       {children}
     </AnalysisContext.Provider>

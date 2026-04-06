@@ -294,7 +294,9 @@ def _get_anthropic_client() -> anthropic.Anthropic:
 # ---------------------------------------------------------------------------
 # Slack notifications (optional, non-blocking)
 # ---------------------------------------------------------------------------
-SLACK_WEBHOOK_URL: str = os.environ.get("SLACK_WEBHOOK_URL") or ""
+# CG uses its own Slack webhook (CG_SLACK_WEBHOOK_URL), NOT the Nova one.
+# If not set, Slack notifications are silently skipped.
+SLACK_WEBHOOK_URL: str = os.environ.get("CG_SLACK_WEBHOOK_URL") or ""
 DEPLOYED_URL: str = os.environ.get("DEPLOYED_URL") or ""
 
 
@@ -1696,6 +1698,433 @@ async def api_clear_uploads() -> dict[str, Any]:
     except Exception:
         logger.error("Failed to clear upload data", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to clear data")
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 2: Daily Upload Workflow -- Fresh & Daily endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/upload/fresh")
+async def api_upload_fresh(
+    file: UploadFile = File(...),
+    sell_cpa: float = Form(1.20),
+    client_name: str = Form(""),
+    job_category: str = Form(""),
+    competitors: str = Form(""),
+    target_geography: str = Form("us_national"),
+    monthly_budget: float = Form(0),
+) -> dict[str, Any]:
+    """Option A: Upload New Campaign Data -- Start Fresh.
+
+    Clears all existing session data, processes the file from scratch,
+    saves normalised daily rows to cg_daily_raw for future merges.
+
+    Returns:
+        Full analysis JSON with session_id for future daily uploads.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    try:
+        contents: bytes = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}") from exc
+
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds 50 MB limit")
+
+    try:
+        fname = (file.filename or "").lower()
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents))
+        else:
+            df = pd.read_excel(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}") from exc
+
+    # Generate session + upload IDs
+    session_id = str(uuid.uuid4())
+    upload_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    # Run full analysis
+    try:
+        result = engine.run_analysis(df, sell_cpa=sell_cpa)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Analysis error: {exc}") from exc
+
+    result = _sanitize_for_json(result)
+    result["job_id"] = job_id
+    result["session_id"] = session_id
+    result["upload_id"] = upload_id
+
+    # Add post status (all still_live for fresh upload)
+    date_col = df["Date"] if "Date" in df.columns else None
+    latest_date = ""
+    if date_col is not None:
+        try:
+            latest_date = pd.to_datetime(date_col).max().strftime("%Y-%m-%d")
+        except Exception:
+            latest_date = datetime.now().strftime("%Y-%m-%d")
+    engine.compute_post_status(result.get("all_runs", []), latest_date)
+    result["latest_upload_date"] = latest_date
+
+    # Date range from file
+    date_from = ""
+    date_to = latest_date
+    if date_col is not None:
+        try:
+            date_from = pd.to_datetime(date_col).min().strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # Store campaign context
+    campaign_context: dict[str, Any] = {
+        k: v for k, v in {
+            "client_name": client_name, "job_category": job_category,
+            "competitors": competitors, "target_geography": target_geography,
+            "monthly_budget": monthly_budget,
+        }.items() if v
+    }
+    result["campaign_context"] = campaign_context
+
+    # Store in memory
+    result["_source_df"] = df
+    result["_sell_cpa"] = sell_cpa
+    job_store[job_id] = result
+
+    # Return JSON-safe copy
+    response = {k: v for k, v in result.items() if not k.startswith("_")}
+
+    # Background: persist to Supabase
+    def _persist_fresh() -> None:
+        try:
+            # Create session
+            supabase_store.create_session(session_id, client_name.strip())
+
+            # Convert daily data to rows for cg_daily_raw
+            daily = engine.convert_cumulative_to_daily(df)
+            daily_rows: list[dict[str, Any]] = []
+            for _, row in daily.iterrows():
+                daily_rows.append({
+                    "post_id": str(row["Post ID"]),
+                    "date": row["Date"].strftime("%Y-%m-%d"),
+                    "location": str(row["Location"]),
+                    "title": str(row["Title"]),
+                    "category": str(row["Category"]),
+                    "template_type": str(row.get("Template Type", "")),
+                    "media_cost": float(row["Media_Cost"]),
+                    "impressions_cumul": float(row["Impressions_Cumul"]),
+                    "clicks_cumul": float(row["Clicks_Cumul"]),
+                    "applies_cumul": float(row["Applies_Cumul"]),
+                    "daily_impressions": float(row["Daily_Impressions"]),
+                    "daily_clicks": float(row["Daily_Clicks"]),
+                    "daily_applies": float(row["Daily_Applies"]),
+                    "day_num": int(row["Day_Num"]),
+                })
+            supabase_store.save_daily_raw_rows(session_id, upload_id, daily_rows)
+
+            # Save upload history
+            supabase_store.save_upload_history(
+                session_id=session_id,
+                upload_id=upload_id,
+                upload_type="fresh",
+                filename=file.filename or "",
+                date_range_from=date_from,
+                date_range_to=date_to,
+                row_count=len(df),
+                change_summary={
+                    "posts_updated": 0,
+                    "new_posts": len(result.get("all_runs", [])),
+                    "posts_ended": 0,
+                    "newly_repost": sum(
+                        1 for r in result.get("all_runs", [])
+                        if r.get("Decision") == "REPOST"
+                    ),
+                },
+            )
+
+            # Also persist full analysis blob for page-refresh (existing feature)
+            supabase_store.save_upload_data(
+                job_id=job_id,
+                filename=file.filename or "",
+                sell_cpa=sell_cpa,
+                client_name=client_name.strip(),
+                analysis_data=response,
+            )
+
+            # Persist job + benchmarks (existing logic)
+            _persist_to_supabase(result, job_id, file.filename or "", sell_cpa)
+
+            logger.info("Fresh upload persisted: session=%s, upload=%s", session_id, upload_id)
+        except Exception:
+            logger.error("Fresh upload persistence failed", exc_info=True)
+
+    threading.Thread(target=_persist_fresh, daemon=True).start()
+
+    # Slack notification
+    _notify_slack_analysis(result, job_id)
+
+    return response
+
+
+@app.post("/api/upload/daily")
+async def api_upload_daily(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    sell_cpa: float = Form(1.20),
+    client_name: str = Form(""),
+) -> dict[str, Any]:
+    """Option B: Add Today's Data -- Update Existing Campaign.
+
+    Merges new file with existing session data. Does NOT clear history.
+    Deduplicates by Post ID + Date, adds new daily rows, recalculates
+    all affected post runs, and regenerates the posting plan.
+
+    Returns:
+        Full updated analysis JSON + change summary.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for daily uploads")
+
+    try:
+        contents: bytes = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}") from exc
+
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds 50 MB limit")
+
+    try:
+        fname = (file.filename or "").lower()
+        if fname.endswith(".csv"):
+            new_df = pd.read_csv(io.BytesIO(contents))
+        else:
+            new_df = pd.read_excel(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}") from exc
+
+    upload_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    # Get existing data from Supabase for merge
+    try:
+        existing_pairs = supabase_store.get_existing_post_date_pairs(session_id)
+        existing_pids = supabase_store.get_existing_post_ids(session_id)
+        identity_map = supabase_store.get_post_run_identity_map(session_id)
+    except Exception as exc:
+        logger.error("Failed to load existing session data for merge", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load existing session data: {exc}",
+        ) from exc
+
+    # Get the old analysis for change comparison
+    old_upload = supabase_store.get_latest_upload_data(client_name.strip() or None)
+    old_analysis = old_upload.get("analysis_data") if old_upload else None
+
+    # Run merge logic
+    try:
+        merge_result = engine.merge_daily_upload(
+            new_df=new_df,
+            existing_post_date_pairs=existing_pairs,
+            existing_post_ids=existing_pids,
+            identity_map=identity_map,
+            sell_cpa=sell_cpa,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Daily merge failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Merge error: {exc}") from exc
+
+    new_rows = merge_result["new_rows"]
+
+    # Insert new rows into cg_daily_raw
+    if new_rows:
+        try:
+            supabase_store.save_daily_raw_rows(session_id, upload_id, new_rows)
+        except Exception as exc:
+            logger.error("Failed to save merged daily rows", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save merged data: {exc}",
+            ) from exc
+
+    # Reload ALL daily raw data and rebuild full analysis
+    try:
+        all_daily_raw = supabase_store.get_daily_raw_for_session(session_id)
+        result = engine.rebuild_from_daily_raw(all_daily_raw, sell_cpa=sell_cpa)
+    except Exception as exc:
+        logger.error("Failed to rebuild analysis after merge", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to rebuild analysis: {exc}",
+        ) from exc
+
+    result = _sanitize_for_json(result)
+    result["job_id"] = job_id
+    result["session_id"] = session_id
+    result["upload_id"] = upload_id
+
+    # Add post status
+    latest_date = ""
+    try:
+        dates = [r.get("date", "") for r in all_daily_raw if r.get("date")]
+        if dates:
+            latest_date = max(dates)
+    except Exception:
+        latest_date = datetime.now().strftime("%Y-%m-%d")
+    engine.compute_post_status(result.get("all_runs", []), latest_date)
+    result["latest_upload_date"] = latest_date
+
+    # Compute change summary
+    change_summary = engine.compute_change_summary(old_analysis, result)
+    result["change_summary"] = change_summary
+    result["merge_stats"] = {
+        "new_rows_inserted": len(new_rows),
+        "rows_skipped_duplicate": merge_result["skipped_count"],
+        "posts_updated": len(merge_result["updated_post_ids"]),
+        "new_posts": len(merge_result["new_post_ids"]),
+        "remapped_posts": len(merge_result["remapped_post_ids"]),
+    }
+
+    # Date range from new file
+    date_from = ""
+    date_to = ""
+    try:
+        new_dates = pd.to_datetime(new_df["Date"])
+        date_from = new_dates.min().strftime("%Y-%m-%d")
+        date_to = new_dates.max().strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    # Store campaign context
+    campaign_context: dict[str, Any] = {
+        k: v for k, v in {"client_name": client_name}.items() if v
+    }
+    result["campaign_context"] = campaign_context
+
+    # Store in memory
+    job_store[job_id] = result
+
+    # Return JSON-safe copy
+    response = {k: v for k, v in result.items() if not k.startswith("_")}
+
+    # Background persistence
+    def _persist_daily() -> None:
+        try:
+            # Save upload history
+            supabase_store.save_upload_history(
+                session_id=session_id,
+                upload_id=upload_id,
+                upload_type="daily",
+                filename=file.filename or "",
+                date_range_from=date_from,
+                date_range_to=date_to,
+                row_count=len(new_df),
+                change_summary=change_summary,
+            )
+
+            # Update full analysis blob for page-refresh
+            supabase_store.clear_all_upload_data()
+            supabase_store.save_upload_data(
+                job_id=job_id,
+                filename=file.filename or "",
+                sell_cpa=sell_cpa,
+                client_name=client_name.strip(),
+                analysis_data=response,
+            )
+
+            logger.info("Daily upload persisted: session=%s, upload=%s", session_id, upload_id)
+        except Exception:
+            logger.error("Daily upload persistence failed", exc_info=True)
+
+    threading.Thread(target=_persist_daily, daemon=True).start()
+
+    # Slack notification
+    _notify_slack_analysis(result, job_id)
+
+    return response
+
+
+@app.get("/api/session/{session_id}")
+async def api_get_session(session_id: str) -> dict[str, Any]:
+    """Restore a session from the database.
+
+    Reads all daily_raw data for this session, rebuilds the full analysis.
+
+    Returns:
+        Full analysis JSON or 404 if session not found.
+    """
+    session = supabase_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        daily_raw = supabase_store.get_daily_raw_for_session(session_id)
+        if not daily_raw:
+            raise HTTPException(status_code=404, detail="No data for this session")
+
+        sell_cpa = 1.20  # default
+        result = engine.rebuild_from_daily_raw(daily_raw, sell_cpa=sell_cpa)
+        result = _sanitize_for_json(result)
+        result["session_id"] = session_id
+
+        # Add post status
+        dates = [r.get("date", "") for r in daily_raw if r.get("date")]
+        latest_date = max(dates) if dates else ""
+        engine.compute_post_status(result.get("all_runs", []), latest_date)
+        result["latest_upload_date"] = latest_date
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to restore session %s", session_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Session restore error: {exc}") from exc
+
+
+@app.delete("/api/session/{session_id}")
+async def api_delete_session(session_id: str) -> dict[str, Any]:
+    """Delete all data for a session (Clear Data / Start Over).
+
+    Deletes daily_raw, upload_history, session record, and cg_uploads.
+
+    Returns:
+        Dict with success boolean.
+    """
+    try:
+        supabase_store.delete_session_data(session_id)
+        supabase_store.clear_all_upload_data()
+        return {"success": True, "session_id": session_id}
+    except Exception:
+        logger.error("Failed to delete session %s", session_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete session data")
+
+
+@app.get("/api/uploads/history/{session_id}")
+async def api_upload_history(session_id: str) -> dict[str, Any]:
+    """Get upload history for a session.
+
+    Returns:
+        Dict with list of past uploads and their change summaries.
+    """
+    try:
+        history = supabase_store.get_upload_history(session_id)
+        return {
+            "session_id": session_id,
+            "uploads": history,
+            "total": len(history),
+        }
+    except Exception:
+        logger.error("Failed to get upload history for %s", session_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load upload history")
 
 
 @app.post("/api/geocode-locations")

@@ -108,7 +108,11 @@ logger = logging.getLogger("cg-automation.supabase")
 # Configuration
 # ---------------------------------------------------------------------------
 _SUPABASE_URL: str = os.environ.get("SUPABASE_URL") or ""
-_SUPABASE_KEY: str = os.environ.get("SUPABASE_SERVICE_KEY") or ""
+_SUPABASE_KEY: str = (
+    os.environ.get("SUPABASE_SERVICE_KEY")
+    or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or ""
+)
 
 
 def _configured() -> bool:
@@ -827,3 +831,440 @@ def clear_all_upload_data() -> bool:
     )
     logger.info("Cleared all upload data from cg_uploads")
     return result is not None or result == []
+
+
+# ---------------------------------------------------------------------------
+# cg_sessions -- Track user sessions across uploads
+# ---------------------------------------------------------------------------
+#
+# -- SQL to create (run once in Supabase SQL editor):
+#
+# CREATE TABLE IF NOT EXISTS cg_sessions (
+#     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+#     session_id TEXT UNIQUE NOT NULL,
+#     client_name TEXT DEFAULT '',
+#     status TEXT DEFAULT 'active',
+#     created_at TIMESTAMPTZ DEFAULT NOW(),
+#     updated_at TIMESTAMPTZ DEFAULT NOW()
+# );
+# ALTER TABLE cg_sessions ENABLE ROW LEVEL SECURITY;
+# CREATE POLICY "Service role full access" ON cg_sessions FOR ALL
+#   USING (auth.role() = 'service_role');
+
+
+def create_session(session_id: str, client_name: str = "") -> Optional[dict[str, Any]]:
+    """Create a new session record.
+
+    Args:
+        session_id: Unique session identifier.
+        client_name: Optional client name.
+
+    Returns:
+        Inserted row dict, or None on failure.
+    """
+    if not _configured():
+        return None
+
+    row: dict[str, Any] = {
+        "session_id": session_id,
+        "client_name": client_name or "",
+        "status": "active",
+    }
+    result = _supabase_request("POST", "cg_sessions", body=row)
+    if result and isinstance(result, list) and len(result) > 0:
+        logger.info("Session created: %s", session_id)
+        return result[0]
+    return result
+
+
+def get_session(session_id: str) -> Optional[dict[str, Any]]:
+    """Retrieve a session by session_id.
+
+    Args:
+        session_id: The session's unique identifier.
+
+    Returns:
+        Session dict or None if not found.
+    """
+    if not _configured():
+        return None
+
+    result = _supabase_request(
+        "GET", "cg_sessions",
+        params={"session_id": f"eq.{session_id}", "select": "*"},
+    )
+    if result and isinstance(result, list) and len(result) > 0:
+        return result[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# cg_daily_raw -- Normalised daily row data (one row per Post ID + Date)
+# ---------------------------------------------------------------------------
+#
+# -- SQL to create (run once in Supabase SQL editor):
+#
+# CREATE TABLE IF NOT EXISTS cg_daily_raw (
+#     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+#     session_id TEXT NOT NULL,
+#     upload_id TEXT NOT NULL,
+#     post_id TEXT NOT NULL,
+#     date DATE NOT NULL,
+#     location TEXT DEFAULT '',
+#     title TEXT DEFAULT '',
+#     category TEXT DEFAULT '',
+#     template_type TEXT DEFAULT '',
+#     media_cost NUMERIC DEFAULT 0,
+#     impressions_cumul NUMERIC DEFAULT 0,
+#     clicks_cumul NUMERIC DEFAULT 0,
+#     applies_cumul NUMERIC DEFAULT 0,
+#     daily_impressions NUMERIC DEFAULT 0,
+#     daily_clicks NUMERIC DEFAULT 0,
+#     daily_applies NUMERIC DEFAULT 0,
+#     day_num INTEGER DEFAULT 1,
+#     created_at TIMESTAMPTZ DEFAULT NOW(),
+#     UNIQUE(session_id, post_id, date)
+# );
+# CREATE INDEX idx_cg_daily_raw_session ON cg_daily_raw(session_id);
+# CREATE INDEX idx_cg_daily_raw_post ON cg_daily_raw(session_id, post_id);
+# ALTER TABLE cg_daily_raw ENABLE ROW LEVEL SECURITY;
+# CREATE POLICY "Service role full access" ON cg_daily_raw FOR ALL
+#   USING (auth.role() = 'service_role');
+
+
+def save_daily_raw_rows(
+    session_id: str,
+    upload_id: str,
+    rows: list[dict[str, Any]],
+) -> int:
+    """Batch insert daily raw data rows into cg_daily_raw.
+
+    Each row should contain: post_id, date, location, title, category,
+    media_cost, impressions_cumul, clicks_cumul, applies_cumul, etc.
+
+    Upserts on (session_id, post_id, date) to avoid duplicates.
+
+    Args:
+        session_id: Parent session identifier.
+        upload_id: The upload that produced these rows.
+        rows: List of daily data row dicts.
+
+    Returns:
+        Number of rows upserted.
+    """
+    if not _configured() or not rows:
+        return 0
+
+    db_rows: list[dict[str, Any]] = []
+    for r in rows:
+        db_rows.append({
+            "session_id": session_id,
+            "upload_id": upload_id,
+            "post_id": str(r.get("post_id", r.get("Post ID", ""))),
+            "date": str(r.get("date", r.get("Date", ""))),
+            "location": str(r.get("location", r.get("Location", ""))),
+            "title": str(r.get("title", r.get("Title", ""))),
+            "category": str(r.get("category", r.get("Category", ""))),
+            "template_type": str(r.get("template_type", r.get("Template Type", ""))),
+            "media_cost": float(r.get("media_cost", r.get("Media_Cost", 0)) or 0),
+            "impressions_cumul": float(r.get("impressions_cumul", r.get("Impressions_Cumul", 0)) or 0),
+            "clicks_cumul": float(r.get("clicks_cumul", r.get("Clicks_Cumul", 0)) or 0),
+            "applies_cumul": float(r.get("applies_cumul", r.get("Applies_Cumul", 0)) or 0),
+            "daily_impressions": float(r.get("daily_impressions", r.get("Daily_Impressions", 0)) or 0),
+            "daily_clicks": float(r.get("daily_clicks", r.get("Daily_Clicks", 0)) or 0),
+            "daily_applies": float(r.get("daily_applies", r.get("Daily_Applies", 0)) or 0),
+            "day_num": int(r.get("day_num", r.get("Day_Num", 1)) or 1),
+        })
+
+    upserted = 0
+    chunk_size = 100
+    for i in range(0, len(db_rows), chunk_size):
+        chunk = db_rows[i : i + chunk_size]
+        result = _supabase_request(
+            "POST", "cg_daily_raw",
+            body=chunk,
+            headers_extra={
+                "Prefer": "return=representation,resolution=merge-duplicates",
+            },
+            params={"on_conflict": "session_id,post_id,date"},
+        )
+        if result and isinstance(result, list):
+            upserted += len(result)
+
+    logger.info("Daily raw rows upserted: %d for session=%s upload=%s",
+                upserted, session_id, upload_id)
+    return upserted
+
+
+def get_daily_raw_for_session(session_id: str) -> list[dict[str, Any]]:
+    """Load all daily raw data rows for a session.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        List of daily raw row dicts ordered by post_id, date.
+    """
+    if not _configured():
+        return []
+
+    all_rows: list[dict[str, Any]] = []
+    offset = 0
+    page_size = 1000
+
+    while True:
+        result = _supabase_request(
+            "GET", "cg_daily_raw",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": "*",
+                "order": "post_id.asc,date.asc",
+                "limit": str(page_size),
+                "offset": str(offset),
+            },
+        )
+        if not result or not isinstance(result, list) or len(result) == 0:
+            break
+        all_rows.extend(result)
+        if len(result) < page_size:
+            break
+        offset += page_size
+
+    logger.info("Loaded %d daily raw rows for session=%s", len(all_rows), session_id)
+    return all_rows
+
+
+def get_existing_post_ids(session_id: str) -> set[str]:
+    """Get the set of Post IDs that already exist for a session.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        Set of post_id strings.
+    """
+    if not _configured():
+        return set()
+
+    result = _supabase_request(
+        "GET", "cg_daily_raw",
+        params={
+            "session_id": f"eq.{session_id}",
+            "select": "post_id",
+            "limit": "50000",
+        },
+    )
+    if result and isinstance(result, list):
+        return {r["post_id"] for r in result}
+    return set()
+
+
+def get_existing_post_date_pairs(session_id: str) -> set[tuple[str, str]]:
+    """Get the set of (post_id, date) pairs that already exist.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        Set of (post_id, date_str) tuples.
+    """
+    if not _configured():
+        return set()
+
+    all_pairs: set[tuple[str, str]] = set()
+    offset = 0
+    page_size = 5000
+
+    while True:
+        result = _supabase_request(
+            "GET", "cg_daily_raw",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": "post_id,date",
+                "limit": str(page_size),
+                "offset": str(offset),
+            },
+        )
+        if not result or not isinstance(result, list) or len(result) == 0:
+            break
+        for r in result:
+            all_pairs.add((str(r["post_id"]), str(r["date"])))
+        if len(result) < page_size:
+            break
+        offset += page_size
+
+    return all_pairs
+
+
+def get_post_run_identity_map(session_id: str) -> list[dict[str, str]]:
+    """Get identity info for fallback matching: d1_date + location + title + category.
+
+    Returns list of dicts with post_id, d1_date, location, title, category
+    where d1_date is the earliest date for that post_id.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        List of post identity dicts.
+    """
+    if not _configured():
+        return []
+
+    # Get all distinct post_ids with their earliest date and identity fields
+    result = _supabase_request(
+        "GET", "cg_daily_raw",
+        params={
+            "session_id": f"eq.{session_id}",
+            "select": "post_id,date,location,title,category",
+            "order": "post_id.asc,date.asc",
+            "limit": "50000",
+        },
+    )
+    if not result or not isinstance(result, list):
+        return []
+
+    # Group by post_id, keep earliest row for each
+    seen: dict[str, dict[str, str]] = {}
+    for r in result:
+        pid = str(r["post_id"])
+        if pid not in seen:
+            seen[pid] = {
+                "post_id": pid,
+                "d1_date": str(r["date"]),
+                "location": str(r.get("location", "")).strip().lower(),
+                "title": str(r.get("title", "")).strip().lower(),
+                "category": str(r.get("category", "")).strip().lower(),
+            }
+
+    return list(seen.values())
+
+
+def delete_session_data(session_id: str) -> bool:
+    """Delete all daily raw data and session record for a session.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        True if successful.
+    """
+    if not _configured():
+        return False
+
+    # Delete daily raw data
+    _supabase_request(
+        "DELETE", "cg_daily_raw",
+        params={"session_id": f"eq.{session_id}"},
+    )
+    # Delete session record
+    _supabase_request(
+        "DELETE", "cg_sessions",
+        params={"session_id": f"eq.{session_id}"},
+    )
+    logger.info("Deleted all data for session=%s", session_id)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# cg_upload_history -- Track each upload event with change summaries
+# ---------------------------------------------------------------------------
+#
+# -- SQL to create (run once in Supabase SQL editor):
+#
+# CREATE TABLE IF NOT EXISTS cg_upload_history (
+#     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+#     session_id TEXT NOT NULL,
+#     upload_id TEXT UNIQUE NOT NULL,
+#     upload_type TEXT DEFAULT 'fresh',
+#     filename TEXT DEFAULT '',
+#     date_range_from DATE,
+#     date_range_to DATE,
+#     row_count INTEGER DEFAULT 0,
+#     posts_updated INTEGER DEFAULT 0,
+#     new_posts INTEGER DEFAULT 0,
+#     posts_ended INTEGER DEFAULT 0,
+#     newly_repost INTEGER DEFAULT 0,
+#     change_summary JSONB DEFAULT '{}'::jsonb,
+#     created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+# CREATE INDEX idx_cg_upload_history_session ON cg_upload_history(session_id);
+# ALTER TABLE cg_upload_history ENABLE ROW LEVEL SECURITY;
+# CREATE POLICY "Service role full access" ON cg_upload_history FOR ALL
+#   USING (auth.role() = 'service_role');
+
+
+def save_upload_history(
+    session_id: str,
+    upload_id: str,
+    upload_type: str,
+    filename: str,
+    date_range_from: str,
+    date_range_to: str,
+    row_count: int,
+    change_summary: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Record an upload event in the history table.
+
+    Args:
+        session_id: Parent session.
+        upload_id: Unique upload identifier.
+        upload_type: 'fresh' or 'daily'.
+        filename: Original filename.
+        date_range_from: Earliest date in the uploaded file.
+        date_range_to: Latest date in the uploaded file.
+        row_count: Number of rows in the uploaded file.
+        change_summary: Dict with posts_updated, new_posts, ended, newly_repost.
+
+    Returns:
+        Inserted row dict, or None on failure.
+    """
+    if not _configured():
+        return None
+
+    row: dict[str, Any] = {
+        "session_id": session_id,
+        "upload_id": upload_id,
+        "upload_type": upload_type,
+        "filename": filename or "",
+        "date_range_from": date_range_from,
+        "date_range_to": date_range_to,
+        "row_count": row_count,
+        "posts_updated": change_summary.get("posts_updated", 0),
+        "new_posts": change_summary.get("new_posts", 0),
+        "posts_ended": change_summary.get("posts_ended", 0),
+        "newly_repost": change_summary.get("newly_repost", 0),
+        "change_summary": change_summary,
+    }
+
+    result = _supabase_request("POST", "cg_upload_history", body=row)
+    if result and isinstance(result, list) and len(result) > 0:
+        logger.info("Upload history saved: %s (type=%s)", upload_id, upload_type)
+        return result[0]
+    return result
+
+
+def get_upload_history(session_id: str) -> list[dict[str, Any]]:
+    """Get all upload history for a session, newest first.
+
+    Args:
+        session_id: The session identifier.
+
+    Returns:
+        List of upload history dicts.
+    """
+    if not _configured():
+        return []
+
+    result = _supabase_request(
+        "GET", "cg_upload_history",
+        params={
+            "session_id": f"eq.{session_id}",
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+    )
+    if result and isinstance(result, list):
+        return result
+    return []

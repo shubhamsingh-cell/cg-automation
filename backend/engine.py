@@ -1092,6 +1092,288 @@ def compare_with_benchmarks(
     return daily_action_plan
 
 
+# ====================================================================
+# DAILY UPLOAD MERGE LOGIC (Feature 2)
+# ====================================================================
+
+def merge_daily_upload(
+    new_df: pd.DataFrame,
+    existing_post_date_pairs: set[tuple[str, str]],
+    existing_post_ids: set[str],
+    identity_map: list[dict[str, str]],
+    sell_cpa: float = DEFAULT_SELL_CPA,
+) -> dict[str, Any]:
+    """Merge a new daily upload with existing session data.
+
+    Implements the dedup/merge logic:
+    a. Skip rows where Post ID + Date already exists (duplicates)
+    b. Add new daily rows for existing Post IDs
+    c. Fallback match by D1_Date + Location + Title + Category
+    d. Insert brand new posts
+
+    Args:
+        new_df: Raw DataFrame from the new upload file.
+        existing_post_date_pairs: Set of (post_id, date_str) already stored.
+        existing_post_ids: Set of post_id strings already stored.
+        identity_map: List of dicts with post identity for fallback matching.
+        sell_cpa: Revenue per apply.
+
+    Returns:
+        Dict with:
+            new_rows: list of new daily row dicts to insert
+            skipped_count: number of duplicate rows skipped
+            updated_post_ids: set of post_ids that got new daily rows
+            new_post_ids: set of brand new post_ids
+            remapped_post_ids: dict mapping new post_id -> existing post_id (fallback match)
+    """
+    global SELL_CPA
+    SELL_CPA = sell_cpa
+
+    logger.info("Merge: Starting daily upload merge")
+
+    # Validate input
+    missing = validate_input(new_df)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # Prepare the new data (convert cumulative to daily)
+    daily = convert_cumulative_to_daily(new_df)
+
+    # Build fallback identity lookup: (d1_date_lower, loc_lower, title_lower, cat_lower) -> post_id
+    fallback_lookup: dict[tuple[str, str, str, str], str] = {}
+    for ident in identity_map:
+        key = (
+            str(ident["d1_date"]).strip(),
+            str(ident["location"]).strip().lower(),
+            str(ident["title"]).strip().lower(),
+            str(ident["category"]).strip().lower(),
+        )
+        fallback_lookup[key] = ident["post_id"]
+
+    new_rows: list[dict[str, Any]] = []
+    skipped_count: int = 0
+    updated_post_ids: set[str] = set()
+    new_post_ids: set[str] = set()
+    remapped_post_ids: dict[str, str] = {}  # new_post_id -> existing_post_id
+
+    # Find the earliest date per post_id in the new upload (for fallback matching)
+    d1_dates_new: dict[str, str] = {}
+    for _, row in daily.iterrows():
+        pid = str(row["Post ID"])
+        date_str = row["Date"].strftime("%Y-%m-%d")
+        if pid not in d1_dates_new or date_str < d1_dates_new[pid]:
+            d1_dates_new[pid] = date_str
+
+    for _, row in daily.iterrows():
+        pid = str(row["Post ID"])
+        date_str = row["Date"].strftime("%Y-%m-%d")
+
+        # Step a: Check if this exact Post ID + Date already exists
+        if (pid, date_str) in existing_post_date_pairs:
+            skipped_count += 1
+            continue
+
+        # Determine the effective post_id (might be remapped via fallback)
+        effective_pid = pid
+
+        # Step b: Does this Post ID already exist (any date)?
+        if pid in existing_post_ids:
+            updated_post_ids.add(pid)
+        else:
+            # Step c: Fallback match by D1_Date + Location + Title + Category
+            d1_date_for_post = d1_dates_new.get(pid, date_str)
+            fallback_key = (
+                d1_date_for_post,
+                str(row["Location"]).strip().lower(),
+                str(row["Title"]).strip().lower(),
+                str(row["Category"]).strip().lower(),
+            )
+            matched_pid = fallback_lookup.get(fallback_key)
+            if matched_pid:
+                # Remap this post_id to the existing one
+                effective_pid = matched_pid
+                remapped_post_ids[pid] = matched_pid
+                updated_post_ids.add(matched_pid)
+                # Also skip if the remapped pair already exists
+                if (matched_pid, date_str) in existing_post_date_pairs:
+                    skipped_count += 1
+                    continue
+            else:
+                # Step d: Brand new post
+                new_post_ids.add(pid)
+
+        # Build the row dict for insertion
+        new_rows.append({
+            "post_id": effective_pid,
+            "date": date_str,
+            "location": str(row["Location"]),
+            "title": str(row["Title"]),
+            "category": str(row["Category"]),
+            "template_type": str(row.get("Template Type", "")),
+            "media_cost": float(row["Media_Cost"]),
+            "impressions_cumul": float(row["Impressions_Cumul"]),
+            "clicks_cumul": float(row["Clicks_Cumul"]),
+            "applies_cumul": float(row["Applies_Cumul"]),
+            "daily_impressions": float(row["Daily_Impressions"]),
+            "daily_clicks": float(row["Daily_Clicks"]),
+            "daily_applies": float(row["Daily_Applies"]),
+            "day_num": int(row["Day_Num"]),
+        })
+
+    logger.info(
+        "Merge result: %d new rows, %d skipped, %d posts updated, "
+        "%d new posts, %d remapped",
+        len(new_rows), skipped_count, len(updated_post_ids),
+        len(new_post_ids), len(remapped_post_ids),
+    )
+
+    return {
+        "new_rows": new_rows,
+        "skipped_count": skipped_count,
+        "updated_post_ids": updated_post_ids,
+        "new_post_ids": new_post_ids,
+        "remapped_post_ids": remapped_post_ids,
+    }
+
+
+def rebuild_from_daily_raw(
+    daily_raw_rows: list[dict[str, Any]],
+    sell_cpa: float = DEFAULT_SELL_CPA,
+) -> dict[str, Any]:
+    """Rebuild the full analysis from normalised daily raw rows.
+
+    This is used after a daily merge: read ALL daily rows from Supabase,
+    reconstruct the DataFrame, and re-run the full pipeline.
+
+    Args:
+        daily_raw_rows: List of daily raw row dicts from Supabase.
+        sell_cpa: Revenue per apply.
+
+    Returns:
+        Full analysis result dict (same structure as run_analysis).
+    """
+    global SELL_CPA
+    SELL_CPA = sell_cpa
+
+    if not daily_raw_rows:
+        raise ValueError("No daily raw data to rebuild from")
+
+    logger.info("Rebuilding analysis from %d daily raw rows", len(daily_raw_rows))
+
+    # Convert to DataFrame matching the format expected by the pipeline
+    records = []
+    for r in daily_raw_rows:
+        records.append({
+            "Date": r.get("date", ""),
+            "Post ID": r.get("post_id", ""),
+            "Title": r.get("title", ""),
+            "Location": r.get("location", ""),
+            "Category": r.get("category", ""),
+            "Template Type": r.get("template_type", ""),
+            "Media Cost ($)": float(r.get("media_cost", 0) or 0),
+            "Impressions (Cumul)": float(r.get("impressions_cumul", 0) or 0),
+            "Clicks (Cumul)": float(r.get("clicks_cumul", 0) or 0),
+            "Applies (Cumul)": float(r.get("applies_cumul", 0) or 0),
+        })
+
+    df = pd.DataFrame(records)
+    return run_analysis(df, sell_cpa=sell_cpa)
+
+
+def compute_post_status(
+    all_runs: list[dict[str, Any]],
+    latest_upload_date: str,
+) -> list[dict[str, Any]]:
+    """Add Still Live / Ended status to each run.
+
+    A post is STILL LIVE if its last appearance is within 30 days of
+    the latest upload date.
+
+    A post is ENDED if it hasn't appeared for 30+ days.
+
+    Args:
+        all_runs: List of run dicts (from the analysis result).
+        latest_upload_date: The most recent date in the latest upload (YYYY-MM-DD).
+
+    Returns:
+        The same list with 'post_status' field added to each run.
+    """
+    try:
+        ref_date = datetime.strptime(latest_upload_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        ref_date = datetime.now()
+
+    for run in all_runs:
+        last_date_str = run.get("Last_Date", run.get("last_date", ""))
+        try:
+            last_date = datetime.strptime(str(last_date_str), "%Y-%m-%d")
+            days_since = (ref_date - last_date).days
+            if days_since <= 30:
+                run["post_status"] = "still_live"
+            else:
+                run["post_status"] = "ended"
+        except (ValueError, TypeError):
+            run["post_status"] = "unknown"
+
+    return all_runs
+
+
+def compute_change_summary(
+    old_analysis: dict[str, Any],
+    new_analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare old and new analysis results to produce a change summary.
+
+    Args:
+        old_analysis: Previous analysis result dict (may be None).
+        new_analysis: New analysis result dict after merge.
+
+    Returns:
+        Dict with posts_updated, new_posts, ended, newly_repost counts.
+    """
+    if not old_analysis:
+        new_runs = new_analysis.get("all_runs", [])
+        repost_count = sum(1 for r in new_runs if r.get("Decision") == "REPOST")
+        return {
+            "posts_updated": 0,
+            "new_posts": len(new_runs),
+            "posts_ended": 0,
+            "newly_repost": repost_count,
+        }
+
+    old_runs = {str(r.get("Post ID", r.get("post_id", ""))): r
+                for r in old_analysis.get("all_runs", [])}
+    new_runs = {str(r.get("Post ID", r.get("post_id", ""))): r
+                for r in new_analysis.get("all_runs", [])}
+
+    old_ids = set(old_runs.keys())
+    new_ids = set(new_runs.keys())
+
+    new_post_ids = new_ids - old_ids
+    ended_post_ids = old_ids - new_ids
+    updated_post_ids = old_ids & new_ids
+
+    # Count posts that were NOT repost before but ARE now
+    newly_repost = 0
+    for pid in updated_post_ids:
+        old_decision = old_runs[pid].get("Decision", "")
+        new_decision = new_runs[pid].get("Decision", "")
+        if old_decision != "REPOST" and new_decision == "REPOST":
+            newly_repost += 1
+
+    # Also count new posts that are REPOST
+    for pid in new_post_ids:
+        if new_runs[pid].get("Decision") == "REPOST":
+            newly_repost += 1
+
+    return {
+        "posts_updated": len(updated_post_ids),
+        "new_posts": len(new_post_ids),
+        "posts_ended": len(ended_post_ids),
+        "newly_repost": newly_repost,
+    }
+
+
 def _runs_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Convert a runs DataFrame to a list of JSON-safe dicts."""
     out = df.copy()
