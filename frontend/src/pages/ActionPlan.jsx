@@ -180,6 +180,10 @@ export default function ActionPlan() {
     { key: '_index', label: '#', width: '44px', align: 'center', render: (val) => <span className="text-[#555]">{val}</span> },
     { key: 'location', label: 'Location', render: (val) => locLink(val) },
     { key: 'recommended_title', label: 'Title', render: (val, row) => <span className="text-white">{val || row.title}</span> },
+    { key: 'salary_first_line', label: 'Salary 1st Line', width: '120px', render: (val, row) => {
+      const salary = val || row.Salary_First_Line || row.salary_benchmark || row.Salary_Benchmark || '';
+      return salary ? <span className="text-[#1E8449] text-xs font-semibold">{salary}</span> : <span className="text-[#555] text-xs">Add pay range</span>;
+    }},
     { key: 'recommended_category', label: 'Category', render: (val, row) => val || row.category || '--' },
     { key: 'best_day', label: 'Best Day', width: '100px', render: (val, row) => {
       const isToday = row.today_is_best_day || row.Today_Is_Best_Day;

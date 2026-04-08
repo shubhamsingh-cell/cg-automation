@@ -37,6 +37,25 @@ DEFAULT_SELL_CPA: float = 1.20
 SELL_CPA: float = DEFAULT_SELL_CPA
 GLOBAL_AVG_MULTIPLIER: float = 3.60
 
+# ---------------------------------------------------------------------------
+# Salary benchmarks by CL category (BLS OES + CG internal data)
+# Used when employer salary is not available. Including salary as the first
+# line of a CL post yields 3.8x more applications (Indeed 2025).
+# ---------------------------------------------------------------------------
+CL_SALARY_BENCHMARKS: dict[str, dict[str, Any]] = {
+    "admin/office": {"hourly_low": 16, "hourly_high": 28, "display": "$16-$28/hr"},
+    "computer gigs": {"hourly_low": 25, "hourly_high": 55, "display": "$25-$55/hr"},
+    "creative gigs": {"hourly_low": 18, "hourly_high": 40, "display": "$18-$40/hr"},
+    "crew gigs": {"hourly_low": 15, "hourly_high": 25, "display": "$15-$25/hr"},
+    "domestic gigs": {"hourly_low": 15, "hourly_high": 25, "display": "$15-$25/hr"},
+    "event gigs": {"hourly_low": 16, "hourly_high": 30, "display": "$16-$30/hr"},
+    "labor gigs": {"hourly_low": 16, "hourly_high": 30, "display": "$16-$30/hr"},
+    "talent gigs": {"hourly_low": 18, "hourly_high": 45, "display": "$18-$45/hr"},
+}
+
+# Optimal word count range for CL descriptions (Appcast 302M click dataset)
+CL_OPTIMAL_WORD_COUNT: tuple[int, int] = (201, 400)
+
 REQUIRED_COLUMNS: list[str] = [
     "Date",
     "Post ID",
@@ -796,6 +815,11 @@ def build_daily_action_plan(
         best_day = loc_intel.get("best_day", "N/A")
         today_is_best = today_name == best_day
 
+        # Look up salary benchmark for this category
+        category_key = _key(loc_intel.get("best_category") or row["Category"])
+        salary_bench = CL_SALARY_BENCHMARKS.get(category_key, {})
+        salary_display = salary_bench.get("display", "")
+
         plan.append(
             {
                 "Rank": 0,  # filled below
@@ -823,6 +847,9 @@ def build_daily_action_plan(
                 "Last_Run_Date": row["D1_Date"].strftime("%Y-%m-%d") if pd.notna(row["D1_Date"]) else "",
                 "Post_ID": row["Post ID"],
                 "Combo": row["Combo"],
+                # Salary-first recommendation (3.8x more applications per Indeed 2025)
+                "Salary_Benchmark": salary_display,
+                "Salary_First_Line": f"Pay: {salary_display}" if salary_display else "",
             }
         )
 
@@ -886,6 +913,19 @@ def build_scorecard(
         "Multi_Post_Combos": multi_post_combos,
         "Avg_Run_Length": round(paid_runs["Run_Length"].mean(), 1) if len(paid_runs) > 0 else 0.0,
         "Total_Applies": int(paid_runs["Total_Applies"].sum()),
+        # Post optimization tips (evidence-based)
+        "Post_Optimization_Tips": {
+            "salary_first_line": (
+                "Include pay/compensation as the FIRST LINE of every CL post. "
+                "Posts with salary in the first line get 3.8x more applications (Indeed 2025)."
+            ),
+            "word_count_goldilocks": (
+                "Keep job descriptions between 201-400 words. This range yields "
+                "8-8.5% apply rate (Appcast 302M click dataset). Under 200 = too vague; "
+                "over 400 = candidate abandonment."
+            ),
+            "optimal_word_range": list(CL_OPTIMAL_WORD_COUNT),
+        },
     }
 
     logger.info(f"  Scorecard: {scorecard['Total_Runs']} runs, "

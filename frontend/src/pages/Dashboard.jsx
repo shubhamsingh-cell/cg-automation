@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, MapPin, DollarSign, Target, Percent,
   ClipboardList, Brain, FileBarChart, Upload, ChevronRight,
+  Lightbulb, BadgeDollarSign, FileText,
 } from 'lucide-react';
 import { useAnalysis } from '../context/AnalysisContext';
 import KPITile from '../components/KPITile';
@@ -196,6 +197,36 @@ export default function Dashboard() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* D2. Post Optimization Tips */}
+      {sc.post_optimization_tips && (
+        <div className="glass rounded-xl p-5 gradient-border mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <Lightbulb size={16} className="text-[#E67E22]" />
+            <h3 className="text-sm font-semibold text-white">Post Optimization Tips</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-[#1E8449]/5 border border-[#1E8449]/15">
+              <BadgeDollarSign size={18} className="text-[#1E8449] shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-semibold text-[#1E8449] mb-1">Salary First = 3.8x More Applications</div>
+                <div className="text-xs text-[#999] leading-relaxed">
+                  {sc.post_optimization_tips.salary_first_line || 'Include pay range as the FIRST LINE of every post.'}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-[#5A54BD]/5 border border-[#5A54BD]/15">
+              <FileText size={18} className="text-[#5A54BD] shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-semibold text-[#5A54BD] mb-1">201-400 Words = Optimal Apply Rate</div>
+                <div className="text-xs text-[#999] leading-relaxed">
+                  {sc.post_optimization_tips.word_count_goldilocks || 'Keep descriptions between 201-400 words for 8-8.5% apply rate.'}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -2241,10 +2241,17 @@ async def api_insights(req: InsightRequest) -> dict[str, str]:
     Returns:
         Dict with a single 'insight' key containing Claude's response.
     """
+    # Look up salary benchmark for the category
+    from engine import CL_SALARY_BENCHMARKS
+    cat_key = (req.recommended_category or "").strip().lower()
+    salary_bench = CL_SALARY_BENCHMARKS.get(cat_key, {})
+    salary_display = salary_bench.get("display", "Ask employer for pay range")
+
     user_prompt = (
         f"Location: {req.location}\n"
         f"Recommended Title: {req.recommended_title} (avg NR: ${req.title_avg_nr:.2f})\n"
         f"Recommended Category: {req.recommended_category} (avg NR: ${req.cat_avg_nr:.2f})\n"
+        f"Salary Benchmark for Category: {salary_display}\n"
         f"Best Day to Post here: {req.best_day} (avg NR: ${req.best_day_nr:.2f})\n"
         f"Today is: {req.today_day}\n"
         f"Historical Profit: {req.profit_pct:.1f}%\n"
@@ -2305,6 +2312,15 @@ async def api_insights(req: InsightRequest) -> dict[str, str]:
         "You are a Craigslist ad campaign analyst. You give specific, actionable "
         "advice based on data. Be concise. When market salary, demand, or CPA "
         "benchmark data is provided, reference it to strengthen your recommendation. "
+        "CRITICAL RULES for Craigslist post optimization:\n"
+        "1. SALARY FIRST: Always recommend including compensation/pay range as the "
+        "FIRST LINE of the Craigslist post in bold. Posts with salary in the first "
+        "line get 3.8x more applications (Indeed 2025 data). Format: 'Pay: $XX-$YY/hr' "
+        "or 'Earn $XXX-$XXX/day'. If salary data is available from market intelligence, "
+        "use it. Otherwise suggest the operator add their pay range.\n"
+        "2. GOLDILOCKS ZONE: Job descriptions should be 201-400 words. This range yields "
+        "8-8.5% apply rate (Appcast 302M click dataset). Under 200 words loses detail; "
+        "over 400 words causes candidate abandonment.\n"
         "Always end with one concrete action the operator can take today."
     )
 
@@ -3090,8 +3106,17 @@ async def api_predict_analysis(req: PredictAnalysisRequest) -> dict[str, Any]:
         "Given prediction data for a hypothetical posting, provide a 2-3 sentence "
         "strategic recommendation. Be specific and actionable. Reference the "
         "scoring factors and expected metrics. If the verdict is OPTIMIZE or SKIP, "
-        "explain exactly what to change."
+        "explain exactly what to change. "
+        "ALWAYS remind: (1) Lead with salary/pay in the first line of the post -- "
+        "this yields 3.8x more applications. (2) Keep description in the 201-400 "
+        "word Goldilocks zone for optimal 8-8.5% apply rate."
     )
+
+    # Look up salary benchmark for the category
+    from engine import CL_SALARY_BENCHMARKS
+    pred_cat_key = (req.category or "").strip().lower()
+    pred_salary_bench = CL_SALARY_BENCHMARKS.get(pred_cat_key, {})
+    pred_salary_display = pred_salary_bench.get("display", "N/A")
 
     user_prompt = (
         f"Prediction for posting in {req.location}, title '{req.title}', "
@@ -3103,12 +3128,15 @@ async def api_predict_analysis(req: PredictAnalysisRequest) -> dict[str, Any]:
         f"{prediction.get('expected_applies', 0)} applies, "
         f"NR ${prediction.get('expected_nr', 0):.2f}\n"
         f"Location multiplier: {prediction.get('location_multiplier', 1.0)}\n"
+        f"Salary benchmark for category: {pred_salary_display}\n"
         f"Best title for location: {prediction.get('best_title_for_location', 'N/A')}\n"
         f"Best category for location: {prediction.get('best_category_for_location', 'N/A')}\n"
         f"Best day for location: {prediction.get('best_day_for_location', 'N/A')}\n"
         f"Confidence: {prediction.get('confidence', 'N/A')} (sample size: {prediction.get('sample_size', 0)})\n"
         f"Scoring breakdown: {json.dumps(prediction.get('scoring', {}).get('factors', []))}\n\n"
-        f"Provide a 2-3 sentence strategic recommendation."
+        f"Provide a 2-3 sentence strategic recommendation. "
+        f"Include the recommended salary first line: 'Pay: {pred_salary_display}' "
+        f"and remind about the 201-400 word Goldilocks zone."
     )
 
     try:
