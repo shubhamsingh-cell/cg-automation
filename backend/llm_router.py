@@ -35,14 +35,20 @@ _MAX_TOKENS: int = 200
 # ---------------------------------------------------------------------------
 
 def _call_gemini(system_prompt: str, user_prompt: str) -> Optional[str]:
-    """Call Google Gemini 3.1 Flash via REST API."""
+    """Call Google Gemini 3 Flash via REST API.
+
+    NOTE (S50): Upgraded from "gemini-3.1-flash-preview" -- which never resolved
+    in v1beta and was silently 404'ing for the entire life of CG Automation --
+    to "gemini-3-flash-preview" (verified working in talent-crm @ df08565).
+    Falls back through Groq/Cerebras/etc on failure (see _PROVIDERS list).
+    """
     if not GEMINI_API_KEY:
         logger.debug("Gemini skipped: no GEMINI_API_KEY")
         return None
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/"
-        f"models/gemini-3.1-flash-preview:generateContent?key={GEMINI_API_KEY}"
+        f"models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}"
     )
     combined_prompt = f"{system_prompt}\n\n{user_prompt}"
     payload = json.dumps({
@@ -236,7 +242,7 @@ def _call_claude_haiku(system_prompt: str, user_prompt: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 _PROVIDERS: list[tuple[str, callable]] = [
-    ("gemini-3.1-flash", _call_gemini),
+    ("gemini-3-flash-preview", _call_gemini),
     ("groq-llama-3.3-70b", _call_groq),
     ("cerebras-llama-3.3-70b", _call_cerebras),
     ("sambanova-llama-3.3-70b", _call_sambanova),
@@ -299,7 +305,11 @@ def normalize_title(raw_title: str) -> str:
     if len(cleaned) < 5 or not GEMINI_API_KEY:
         return cleaned
 
-    # Try Gemini 3.1 Flash Lite for smart normalization
+    # Try Gemini 3.1 Flash Lite for smart normalization (S50, May 2026): Google
+    # has shipped "gemini-3.1-flash-lite-preview" since the earlier 404 (originally
+    # the model ID didn't resolve, fixed temporarily to gemini-2.5-flash-lite, now
+    # back on the latest free lite tier). Pairs with _call_gemini's
+    # gemini-3-flash-preview for the latest free Gemini stack.
     try:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/"
